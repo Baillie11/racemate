@@ -284,6 +284,17 @@ app.get('/api/dashboard', (req, res) => {
             const races = db.races.getByMeeting(meeting.id).map(race => {
                 const pendingCount = db.bets.getPendingByRace(race.id).length;
                 const allRaceBets = db.bets.getByRace(race.id);
+                const betRunners = allRaceBets.reduce((acc, bet) => {
+                    const key = `${bet.saddle_no || ''}-${bet.horse_name || ''}`;
+                    if (!acc.some(item => item.key === key)) {
+                        acc.push({
+                            key,
+                            saddle_no: bet.saddle_no || null,
+                            horse_name: bet.horse_name || null
+                        });
+                    }
+                    return acc;
+                }, []);
                 const settledBets = allRaceBets.filter(b => b.status !== 'pending');
                 const totalProfit = settledBets.reduce((sum, b) =>
                     sum + ((Number(b.payout_win || 0) + Number(b.payout_place || 0)) - (Number(b.stake_win || 0) + Number(b.stake_place || 0))), 0);
@@ -300,6 +311,8 @@ app.get('/api/dashboard', (req, res) => {
                 return {
                     ...race,
                     pending_bets: pendingCount,
+                    bet_count: allRaceBets.length,
+                    bet_runners: betRunners.map(({ key, ...runner }) => runner),
                     settled_bets: settledBets.length,
                     result_entered: !!resultRow,
                     placings: resultRow ? {

@@ -86,6 +86,17 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
+function formatBetRunnerLabel(runners = []) {
+    const validRunners = (runners || []).filter(runner => runner && runner.horse_name);
+    if (validRunners.length === 0) {
+        return '';
+    }
+
+    return validRunners
+        .map(runner => `${runner.saddle_no ? `${runner.saddle_no}. ` : ''}${runner.horse_name}`)
+        .join(', ');
+}
+
 // ============ State ============
 const state = {
     tracks: createEmptyTrackMap(),
@@ -353,6 +364,7 @@ async function renderToday() {
                                         ? 'runner-result-lost'
                                         : 'runner-result-neutral'}">
                                 <div class="runner-info">
+                                    ${formatBetRunnerLabel(race.bet_runners) ? `<div class="runner-name"><strong>${escapeHtml(formatBetRunnerLabel(race.bet_runners))}</strong></div>` : ''}
                                     <div class="runner-name">R${race.race_no}: ${race.race_name || `Race ${race.race_no}`}</div>
                                     <div class="runner-meta">
                                         ${formatRaceDate(item.meeting.date)} • ${race.distance || '-'}m • ${race.pending_bets > 0 ? `Pending bets: ${race.pending_bets}` : 'No Bet Recommended'}

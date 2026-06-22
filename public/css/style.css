@@ -450,11 +450,13 @@ body {
 }
 
 .runner-item.runner-result-win {
-    background: #eaf8ee;
+    background: #bbf7d0;
+    border-left: 4px solid #22c55e;
 }
 
 .runner-item.runner-result-lost {
-    background: #fdeeee;
+    background: #fecaca;
+    border-left: 4px solid #ef4444;
 }
 
 .runner-item.runner-result-neutral .runner-name,
