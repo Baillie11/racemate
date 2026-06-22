@@ -254,6 +254,14 @@ async function renderToday() {
             </div>
             <button id="refresh-dashboard-btn" class="btn btn-primary btn-block">Refresh Dashboard</button>
         </div>
+        <div class="card">
+            <div class="flex flex-between flex-center mb-2">
+                <h2 class="card-title">Automated Racing Import</h2>
+                <button id="import-racing-today-btn" class="btn btn-primary btn-sm">Import Today's Meetings</button>
+            </div>
+            <div id="racing-import-status" class="text-muted mb-2">Provider: ${escapeHtml(state.settings.racing_provider || 'sample')}</div>
+            <div id="racing-import-content"></div>
+        </div>
         <div id="meeting-content"></div>
     `;
     
@@ -262,6 +270,8 @@ async function renderToday() {
     const trackSelect = document.getElementById('track-select');
     const dateSelect = document.getElementById('date-select');
     const content = document.getElementById('meeting-content');
+    const racingImportContent = document.getElementById('racing-import-content');
+    const racingImportStatus = document.getElementById('racing-import-status');
     
     function updateTracks() {
         const selectedState = stateSelect.value;
@@ -406,6 +416,97 @@ async function renderToday() {
         await loadDashboard();
     });
 
+    document.getElementById('import-racing-today-btn').addEventListener('click', async () => {
+        racingImportStatus.textContent = 'Importing today\'s meetings...';
+        try {
+            const result = await api('/racing/import/today', { method: 'POST', body: { provider: state.settings.racing_provider || 'sample' } });
+            const summary = result.summary || {};
+            racingImportStatus.textContent = `Import completed: ${summary.meetings || 0} meetings, ${summary.races || 0} races, ${summary.runners || 0} runners`;
+            toast(result.success ? 'Import completed successfully' : 'Import completed with warnings', result.success ? 'success' : 'warning');
+            await loadImportedRacingData();
+            await loadDashboard();
+        } catch (err) {
+            racingImportStatus.textContent = 'Import failed';
+            racingImportContent.innerHTML = `<div class="empty-state text-danger">Import failed: ${escapeHtml(err.message)}</div>`;
+        }
+    });
+
+    async function loadImportedRacingData() {
+        racingImportContent.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+        try {
+            const data = await api('/racing/meetings/today');
+            racingImportStatus.textContent = data.last_imported_at
+                ? `Last imported: ${new Date(data.last_imported_at).toLocaleString()}`
+                : 'No import run yet';
+
+            if (!data.meetings || data.meetings.length === 0) {
+                racingImportContent.innerHTML = '<div class="empty-state">No meetings imported yet</div>';
+                return;
+            }
+
+            const meetingSections = [];
+            for (const meeting of data.meetings) {
+                const raceData = await api(`/racing/meetings/${meeting.id}/races`);
+                const raceRows = [];
+                for (const race of raceData.races || []) {
+                    const runnerData = await api(`/racing/races/${race.id}/runners`);
+                    raceRows.push(`
+                        <div class="runner-item runner-result-neutral">
+                            <div class="runner-info">
+                                <div class="runner-name">R${race.race_no}: ${escapeHtml(race.race_name || `Race ${race.race_no}`)}</div>
+                                <div class="runner-meta">${escapeHtml(race.start_time || 'TBA')} • ${race.distance || '-'}m • ${escapeHtml(race.status || 'scheduled')}</div>
+                                <div class="table-wrap mt-1">
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>No</th>
+                                                <th>Horse</th>
+                                                <th>Barrier</th>
+                                                <th>Weight</th>
+                                                <th>Jockey</th>
+                                                <th>Trainer</th>
+                                                <th>Win</th>
+                                                <th>Place</th>
+                                                <th>Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${(runnerData.runners || []).map(runner => `
+                                                <tr>
+                                                    <td>${runner.saddle_no || ''}</td>
+                                                    <td>${escapeHtml(runner.horse_name || '')}</td>
+                                                    <td>${runner.barrier || ''}</td>
+                                                    <td>${runner.weight || ''}</td>
+                                                    <td>${escapeHtml(runner.jockey || '')}</td>
+                                                    <td>${escapeHtml(runner.trainer || '')}</td>
+                                                    <td>${runner.odds_win || ''}</td>
+                                                    <td>${runner.odds_place || ''}</td>
+                                                    <td>${runner.scratched ? 'Scratched' : 'Active'}</td>
+                                                </tr>
+                                            `).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    `);
+                }
+
+                meetingSections.push(`
+                    <div class="mb-2">
+                        <div class="section-heading">${escapeHtml(meeting.track)} (${escapeHtml(meeting.state)}) • ${formatRaceDate(meeting.date)}</div>
+                        ${raceRows.length ? raceRows.join('') : '<div class="empty-state">No races imported yet</div>'}
+                    </div>
+                `);
+            }
+
+            racingImportContent.innerHTML = meetingSections.join('');
+        } catch (err) {
+            racingImportContent.innerHTML = `<div class="empty-state text-danger">Import failed: ${escapeHtml(err.message)}</div>`;
+        }
+    }
+
+    loadImportedRacingData();
     loadDashboard();
 }
 

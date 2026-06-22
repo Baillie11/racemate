@@ -221,7 +221,89 @@ npm run dev          # Start development server
 npm run start        # Start server
 npm run init:db      # Initialize database
 npm run update:tracks # Update track list from Racing Australia
+npm run import:sample # Smoke-test the automated racing importer with sample data
+npm run test:import  # Same import smoke test, using a temporary SQLite DB
 ```
+
+## Automated Racing Import
+
+RaceMate includes a modular racing data import workflow for Australian horse racing meetings. It is designed so the app calls a generic provider interface instead of depending directly on one racing website.
+
+The provider interface lives in `src/providers/racingProvider.js` and exposes:
+
+```js
+getTodaysMeetings()
+getRacesForMeeting(meeting)
+getRunnersForRace(race)
+getResultsForRace(race)
+getOddsForRace(race)
+```
+
+Current providers:
+
+- `sample` - working sample provider for local testing and UI development.
+- `tab` - placeholder only. Add a compliant feed/API integration before enabling.
+- `racenet` - placeholder only. Add a compliant feed/API integration before enabling.
+
+Do not use this workflow to bypass logins, paywalls, captchas, robots.txt, or access protections. Real providers should use approved APIs, licensed feeds, exported files, or other compliant data sources.
+
+### Environment Variables
+
+```bash
+RACING_PROVIDER=sample
+ENABLE_RACING_CRON=false
+RACING_IMPORT_TIME=02:00
+TIMEZONE=Australia/Brisbane
+```
+
+`ENABLE_RACING_CRON=false` is the recommended setting on cPanel shared hosting unless you are sure the Node process stays alive and you want the app itself to run the daily import. You can keep cron disabled and use the dashboard button or API endpoint instead.
+
+### Run Import Locally
+
+```bash
+npm run test:import
+```
+
+The test script uses a temporary database at `tmp/racing-import-test.db`, so it does not touch your normal `data/racing.db` file.
+
+### Trigger Import Manually
+
+From the dashboard, use the **Import Today's Meetings** button in the Automated Racing Import section.
+
+You can also call the API:
+
+```bash
+curl -X POST http://localhost:3000/racemate/api/racing/import/today ^
+  -H "Content-Type: application/json" ^
+  -d "{\"provider\":\"sample\"}"
+```
+
+If running locally without `BASE_PATH=/racemate`, use:
+
+```bash
+curl -X POST http://localhost:3000/api/racing/import/today ^
+  -H "Content-Type: application/json" ^
+  -d "{\"provider\":\"sample\"}"
+```
+
+### Racing Import API
+
+- `GET /api/racing/meetings/today` - today's imported meetings.
+- `GET /api/racing/meetings/:id/races` - races for one imported meeting.
+- `GET /api/racing/races/:id/runners` - runners for one imported race.
+- `POST /api/racing/import/today` - run today's configured provider import.
+- `POST /api/racing/import/results` - stub for later results import.
+- `POST /api/racing/import/odds` - stub for later odds snapshots.
+
+The importer uses upsert logic for meetings, races, and runners, so it can be safely run more than once without duplicating provider-sourced records.
+
+### Known Limitations
+
+- The only working provider is `sample`.
+- TAB and Racenet provider files are intentional stubs until a compliant data source is selected.
+- Odds snapshots are recorded from provider runner odds when available, but live odds polling is not implemented yet.
+- Results and tips tables are prepared for later strategy testing, but imports are currently stubbed.
+- The scheduled job checks once per minute while the Node process is running. On shared hosting, prefer manual import unless you have confirmed the process model is reliable.
 
 ## License
 

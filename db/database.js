@@ -2,7 +2,7 @@ const initSqlJs = require('sql.js');
 const path = require('path');
 const fs = require('fs');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'racing.db');
+const DB_PATH = process.env.RACEMATE_DB_PATH || path.join(__dirname, '..', 'data', 'racing.db');
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
 
 // Ensure data directory exists
@@ -58,8 +58,55 @@ async function initSchema() {
             }
         }
     }
+    migrateSchema();
     saveDB();
     console.log('Database schema initialized');
+}
+
+function tableColumns(tableName) {
+    return all(`PRAGMA table_info(${tableName})`).map(row => row.name);
+}
+
+function addColumnIfMissing(tableName, columnName, definition) {
+    const columns = tableColumns(tableName);
+    if (columns.includes(columnName)) return;
+    db.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+}
+
+function runMigrationStatement(sql) {
+    try {
+        db.run(sql);
+    } catch (e) {
+        if (!e.message.includes('already exists')) {
+            console.warn('Migration warning:', e.message);
+        }
+    }
+}
+
+function migrateSchema() {
+    addColumnIfMissing('meetings', 'source_meeting_id', 'TEXT');
+    addColumnIfMissing('meetings', 'country', "TEXT DEFAULT 'AUS'");
+    addColumnIfMissing('meetings', 'race_type', "TEXT DEFAULT 'horse'");
+    addColumnIfMissing('meetings', 'updated_at', 'DATETIME');
+
+    addColumnIfMissing('races', 'source', "TEXT DEFAULT 'manual'");
+    addColumnIfMissing('races', 'source_race_id', 'TEXT');
+    addColumnIfMissing('races', 'status', "TEXT DEFAULT 'scheduled'");
+    addColumnIfMissing('races', 'updated_at', 'DATETIME');
+
+    addColumnIfMissing('runners', 'source', "TEXT DEFAULT 'manual'");
+    addColumnIfMissing('runners', 'source_runner_id', 'TEXT');
+    addColumnIfMissing('runners', 'updated_at', 'DATETIME');
+
+    [
+        'CREATE INDEX IF NOT EXISTS idx_meetings_source ON meetings(source, source_meeting_id)',
+        'CREATE INDEX IF NOT EXISTS idx_races_source ON races(source, source_race_id)',
+        'CREATE INDEX IF NOT EXISTS idx_runners_source ON runners(source, source_runner_id)',
+        'CREATE INDEX IF NOT EXISTS idx_odds_snapshots_runner ON odds_snapshots(runner_id)',
+        'CREATE INDEX IF NOT EXISTS idx_odds_snapshots_recorded ON odds_snapshots(recorded_at)',
+        'CREATE INDEX IF NOT EXISTS idx_results_race ON results(race_id)',
+        'CREATE INDEX IF NOT EXISTS idx_tips_race ON tips(race_id)'
+    ].forEach(runMigrationStatement);
 }
 
 // Helper to run query and get all results
@@ -128,6 +175,51 @@ const meetings = {
             [data.date, data.state, data.track, data.source || 'manual', data.weather || null, data.rail_position || null]);
         return this.getByDateTrack(data.date, data.state, data.track);
     },
+    upsertFromProvider(data) {
+        const source = data.source || 'sample';
+        const date = data.meeting_date || data.date;
+        const track = data.track_name || data.track;
+        const state = data.state || 'Unknown';
+        const existing = data.source_meeting_id
+            ? get('SELECT * FROM meetings WHERE source = ? AND source_meeting_id = ?', [source, data.source_meeting_id])
+            : this.getByDateTrack(date, state, track);
+
+        if (existing) {
+            run(`UPDATE meetings
+                 SET date = ?, state = ?, track = ?, source = ?, source_meeting_id = ?,
+                     country = ?, race_type = ?, weather = ?, rail_position = ?, updated_at = datetime('now')
+                 WHERE id = ?`, [
+                date,
+                state,
+                track,
+                source,
+                data.source_meeting_id || existing.source_meeting_id || null,
+                data.country || existing.country || 'AUS',
+                data.race_type || existing.race_type || 'horse',
+                data.weather || existing.weather || null,
+                data.rail_position || existing.rail_position || null,
+                existing.id
+            ]);
+            return this.getById(existing.id);
+        }
+
+        run(`INSERT INTO meetings
+             (date, state, track, source, source_meeting_id, country, race_type, weather, rail_position, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`, [
+            date,
+            state,
+            track,
+            source,
+            data.source_meeting_id || null,
+            data.country || 'AUS',
+            data.race_type || 'horse',
+            data.weather || null,
+            data.rail_position || null
+        ]);
+        return data.source_meeting_id
+            ? get('SELECT * FROM meetings WHERE source = ? AND source_meeting_id = ?', [source, data.source_meeting_id])
+            : this.getByDateTrack(date, state, track);
+    },
     getById(id) {
         return get('SELECT * FROM meetings WHERE id = ?', [id]);
     },
@@ -149,6 +241,11 @@ const meetings = {
     },
     getByDate(date) {
         return all('SELECT * FROM meetings WHERE date = ? ORDER BY state, track', [date]);
+    },
+    getImportedByDate(date) {
+        return all(`SELECT * FROM meetings
+            WHERE date = ? AND source != 'manual'
+            ORDER BY state, track`, [date]);
     },
     getAll() {
         return all('SELECT * FROM meetings ORDER BY date DESC, state, track');
@@ -247,6 +344,67 @@ const races = {
             [meetingId, data.race_no, data.race_name || null, data.start_time || null, data.distance || null,
              data.track_condition || null, data.race_class || null, data.prize_money || null]);
         return this.getByMeetingAndNumber(meetingId, data.race_no);
+    },
+    upsertFromProvider(meetingId, data) {
+        const source = data.source || 'sample';
+        const raceNo = parseInt(data.race_number ?? data.race_no, 10);
+        const existing = data.source_race_id
+            ? get('SELECT * FROM races WHERE source = ? AND source_race_id = ?', [source, data.source_race_id])
+            : this.getByMeetingAndNumber(meetingId, raceNo);
+
+        const payload = {
+            race_no: raceNo,
+            race_name: data.race_name || null,
+            start_time: data.start_time || null,
+            distance: parseInt(data.distance, 10) || null,
+            track_condition: data.track_condition || null,
+            race_class: data.class || data.race_class || null,
+            prize_money: parseInt(data.prize_money, 10) || null,
+            status: data.status || 'scheduled'
+        };
+
+        if (existing) {
+            run(`UPDATE races
+                 SET meeting_id = ?, race_no = ?, source = ?, source_race_id = ?, race_name = ?,
+                     start_time = ?, distance = ?, track_condition = ?, race_class = ?, prize_money = ?,
+                     status = ?, updated_at = datetime('now')
+                 WHERE id = ?`, [
+                meetingId,
+                payload.race_no,
+                source,
+                data.source_race_id || existing.source_race_id || null,
+                payload.race_name,
+                payload.start_time,
+                payload.distance,
+                payload.track_condition,
+                payload.race_class,
+                payload.prize_money,
+                payload.status,
+                existing.id
+            ]);
+            return this.getById(existing.id);
+        }
+
+        run(`INSERT INTO races
+             (meeting_id, race_no, source, source_race_id, race_name, start_time, distance,
+              track_condition, race_class, prize_money, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`, [
+            meetingId,
+            payload.race_no,
+            source,
+            data.source_race_id || null,
+            payload.race_name,
+            payload.start_time,
+            payload.distance,
+            payload.track_condition,
+            payload.race_class,
+            payload.prize_money,
+            payload.status
+        ]);
+
+        return data.source_race_id
+            ? get('SELECT * FROM races WHERE source = ? AND source_race_id = ?', [source, data.source_race_id])
+            : this.getByMeetingAndNumber(meetingId, payload.race_no);
     },
     getById(id) {
         return get('SELECT * FROM races WHERE id = ?', [id]);
@@ -362,6 +520,70 @@ const runners = {
              data.rating || null, data.days_since_last_run || null, data.scratched ? 1 : 0,
              data.odds_win || null, data.odds_place || null]);
         return this.getByRaceAndSaddle(raceId, data.saddle_no);
+    },
+    upsertFromProvider(raceId, data) {
+        const source = data.source || 'sample';
+        const saddleNo = parseInt(data.runner_number ?? data.saddle_no, 10);
+        const existing = data.source_runner_id
+            ? get('SELECT * FROM runners WHERE source = ? AND source_runner_id = ?', [source, data.source_runner_id])
+            : this.getByRaceAndSaddle(raceId, saddleNo);
+
+        const payload = {
+            saddle_no: saddleNo,
+            horse_name: data.horse_name,
+            barrier: parseInt(data.barrier, 10) || null,
+            weight: parseFloat(data.weight) || null,
+            jockey: data.jockey || null,
+            trainer: data.trainer || null,
+            scratched: data.scratched ? 1 : 0,
+            odds_win: parseFloat(data.fixed_win_odds ?? data.odds_win) || null,
+            odds_place: parseFloat(data.fixed_place_odds ?? data.odds_place) || null
+        };
+
+        if (existing) {
+            run(`UPDATE runners
+                 SET race_id = ?, saddle_no = ?, source = ?, source_runner_id = ?, horse_name = ?,
+                     barrier = ?, weight = ?, jockey = ?, trainer = ?, scratched = ?,
+                     odds_win = ?, odds_place = ?, updated_at = datetime('now')
+                 WHERE id = ?`, [
+                raceId,
+                payload.saddle_no,
+                source,
+                data.source_runner_id || existing.source_runner_id || null,
+                payload.horse_name,
+                payload.barrier,
+                payload.weight,
+                payload.jockey,
+                payload.trainer,
+                payload.scratched,
+                payload.odds_win,
+                payload.odds_place,
+                existing.id
+            ]);
+            return this.getById(existing.id);
+        }
+
+        run(`INSERT INTO runners
+             (race_id, saddle_no, source, source_runner_id, horse_name, barrier, weight,
+              jockey, trainer, scratched, odds_win, odds_place, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`, [
+            raceId,
+            payload.saddle_no,
+            source,
+            data.source_runner_id || null,
+            payload.horse_name,
+            payload.barrier,
+            payload.weight,
+            payload.jockey,
+            payload.trainer,
+            payload.scratched,
+            payload.odds_win,
+            payload.odds_place
+        ]);
+
+        return data.source_runner_id
+            ? get('SELECT * FROM runners WHERE source = ? AND source_runner_id = ?', [source, data.source_runner_id])
+            : this.getByRaceAndSaddle(raceId, payload.saddle_no);
     },
     getById(id) {
         return get('SELECT * FROM runners WHERE id = ?', [id]);
@@ -497,6 +719,82 @@ const raceResults = {
     }
 };
 
+const oddsSnapshots = {
+    create(data) {
+        const result = run(`INSERT INTO odds_snapshots (runner_id, source, win_odds, place_odds, recorded_at)
+            VALUES (?, ?, ?, ?, datetime('now'))`, [
+            data.runner_id,
+            data.source || 'sample',
+            data.win_odds ?? null,
+            data.place_odds ?? null
+        ]);
+        return get('SELECT * FROM odds_snapshots WHERE id = ?', [result.lastInsertRowid]);
+    },
+    getByRunner(runnerId, limit = 100) {
+        return all('SELECT * FROM odds_snapshots WHERE runner_id = ? ORDER BY recorded_at DESC LIMIT ?', [runnerId, limit]);
+    }
+};
+
+const importedResults = {
+    upsert(data) {
+        const existing = get('SELECT * FROM results WHERE race_id = ? AND runner_id = ?', [data.race_id, data.runner_id || null]);
+        if (existing) {
+            run(`UPDATE results
+                 SET finishing_position = ?, margin = ?, starting_price = ?, updated_at = datetime('now')
+                 WHERE id = ?`, [
+                data.finishing_position ?? null,
+                data.margin || null,
+                data.starting_price ?? null,
+                existing.id
+            ]);
+            return get('SELECT * FROM results WHERE id = ?', [existing.id]);
+        }
+
+        const result = run(`INSERT INTO results
+            (race_id, runner_id, finishing_position, margin, starting_price, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`, [
+            data.race_id,
+            data.runner_id || null,
+            data.finishing_position ?? null,
+            data.margin || null,
+            data.starting_price ?? null
+        ]);
+        return get('SELECT * FROM results WHERE id = ?', [result.lastInsertRowid]);
+    }
+};
+
+const tips = {
+    upsert(data) {
+        const existing = get(`SELECT * FROM tips
+            WHERE race_id = ? AND runner_id = ? AND tip_type = ?`, [
+            data.race_id,
+            data.runner_id || null,
+            data.tip_type || 'provider'
+        ]);
+        if (existing) {
+            run(`UPDATE tips
+                 SET confidence = ?, reasoning = ?, updated_at = datetime('now')
+                 WHERE id = ?`, [
+                data.confidence ?? null,
+                data.reasoning || null,
+                existing.id
+            ]);
+            return get('SELECT * FROM tips WHERE id = ?', [existing.id]);
+        }
+
+        const result = run(`INSERT INTO tips
+            (race_id, runner_id, tip_type, confidence, reasoning, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`, [
+            data.race_id,
+            data.runner_id || null,
+            data.tip_type || 'provider',
+            data.confidence ?? null,
+            data.reasoning || null
+        ]);
+        return get('SELECT * FROM tips WHERE id = ?', [result.lastInsertRowid]);
+    }
+};
+
 // Audit log operations
 const auditLogs = {
     create(data) {
@@ -593,4 +891,21 @@ const stats = {
     }
 };
 
-module.exports = { initDB, initSchema, saveDB, settings, meetings, races, runners, selections, bets, raceResults, auditLogs, transactions, stats };
+module.exports = {
+    initDB,
+    initSchema,
+    saveDB,
+    settings,
+    meetings,
+    races,
+    runners,
+    selections,
+    bets,
+    raceResults,
+    oddsSnapshots,
+    importedResults,
+    tips,
+    auditLogs,
+    transactions,
+    stats
+};

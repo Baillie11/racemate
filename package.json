@@ -7,7 +7,9 @@
     "start": "node server.js",
     "dev": "node server.js",
     "update:tracks": "node scripts/update_tracks.js",
-    "init:db": "node db/init.js"
+    "init:db": "node db/init.js",
+    "import:sample": "node scripts/test_racing_import.js",
+    "test:import": "node scripts/test_racing_import.js"
   },
   "keywords": ["horse-racing", "betting", "bankroll"],
   "author": "",

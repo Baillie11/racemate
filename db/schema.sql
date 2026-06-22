@@ -12,9 +12,13 @@ CREATE TABLE IF NOT EXISTS meetings (
     state TEXT NOT NULL,
     track TEXT NOT NULL,
     source TEXT DEFAULT 'manual',
+    source_meeting_id TEXT,
+    country TEXT DEFAULT 'AUS',
+    race_type TEXT DEFAULT 'horse',
     weather TEXT,
     rail_position TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(date, state, track)
 );
 
@@ -23,13 +27,17 @@ CREATE TABLE IF NOT EXISTS races (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     meeting_id INTEGER NOT NULL,
     race_no INTEGER NOT NULL,
+    source TEXT DEFAULT 'manual',
+    source_race_id TEXT,
     race_name TEXT,
     start_time TEXT,
     distance INTEGER,
     track_condition TEXT,
     race_class TEXT,
     prize_money INTEGER,
+    status TEXT DEFAULT 'scheduled',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE,
     UNIQUE(meeting_id, race_no)
 );
@@ -39,6 +47,8 @@ CREATE TABLE IF NOT EXISTS runners (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     race_id INTEGER NOT NULL,
     saddle_no INTEGER NOT NULL,
+    source TEXT DEFAULT 'manual',
+    source_runner_id TEXT,
     horse_name TEXT NOT NULL,
     barrier INTEGER,
     weight REAL,
@@ -66,8 +76,50 @@ CREATE TABLE IF NOT EXISTS runners (
     odds_win REAL,
     odds_place REAL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE,
     UNIQUE(race_id, saddle_no)
+);
+
+-- Provider odds snapshots for later analysis/backtesting
+CREATE TABLE IF NOT EXISTS odds_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    runner_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    win_odds REAL,
+    place_odds REAL,
+    recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (runner_id) REFERENCES runners(id) ON DELETE CASCADE
+);
+
+-- Provider result rows, separate from manual race_results placings
+CREATE TABLE IF NOT EXISTS results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    race_id INTEGER NOT NULL,
+    runner_id INTEGER,
+    finishing_position INTEGER,
+    margin TEXT,
+    starting_price REAL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE,
+    FOREIGN KEY (runner_id) REFERENCES runners(id) ON DELETE SET NULL,
+    UNIQUE(race_id, runner_id)
+);
+
+-- Provider or internal tips, kept separate from selections/bets
+CREATE TABLE IF NOT EXISTS tips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    race_id INTEGER NOT NULL,
+    runner_id INTEGER,
+    tip_type TEXT,
+    confidence REAL,
+    reasoning TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE,
+    FOREIGN KEY (runner_id) REFERENCES runners(id) ON DELETE SET NULL,
+    UNIQUE(race_id, runner_id, tip_type)
 );
 
 -- Selections table (model predictions)
@@ -143,8 +195,15 @@ CREATE TABLE IF NOT EXISTS transactions (
 -- Create indexes for performance
 CREATE INDEX IF NOT EXISTS idx_meetings_date ON meetings(date);
 CREATE INDEX IF NOT EXISTS idx_meetings_state_track ON meetings(state, track);
+CREATE INDEX IF NOT EXISTS idx_meetings_source ON meetings(source, source_meeting_id);
 CREATE INDEX IF NOT EXISTS idx_races_meeting ON races(meeting_id);
+CREATE INDEX IF NOT EXISTS idx_races_source ON races(source, source_race_id);
 CREATE INDEX IF NOT EXISTS idx_runners_race ON runners(race_id);
+CREATE INDEX IF NOT EXISTS idx_runners_source ON runners(source, source_runner_id);
+CREATE INDEX IF NOT EXISTS idx_odds_snapshots_runner ON odds_snapshots(runner_id);
+CREATE INDEX IF NOT EXISTS idx_odds_snapshots_recorded ON odds_snapshots(recorded_at);
+CREATE INDEX IF NOT EXISTS idx_results_race ON results(race_id);
+CREATE INDEX IF NOT EXISTS idx_tips_race ON tips(race_id);
 CREATE INDEX IF NOT EXISTS idx_selections_race ON selections(race_id);
 CREATE INDEX IF NOT EXISTS idx_bets_selection ON bets(selection_id);
 CREATE INDEX IF NOT EXISTS idx_bets_status ON bets(status);
@@ -167,4 +226,9 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('min_bankroll_floor', '5'),
     ('last_state', 'VIC'),
     ('last_track', ''),
-    ('initial_bankroll_set', '0');
+    ('initial_bankroll_set', '0'),
+    ('racing_provider', 'sample'),
+    ('enable_racing_cron', 'false'),
+    ('racing_import_time', '02:00'),
+    ('timezone', 'Australia/Brisbane'),
+    ('last_racing_import_at', '');

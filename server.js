@@ -21,6 +21,9 @@ const bankroll = require('./services/bankroll');
 const genericHtml = require('./parsers/genericHtml');
 const sportsbookAdapter = require('./parsers/skeletonSportsbookAdapter');
 const { parsePastedFormGuide } = require('./parsers/pastedFormGuide');
+const racingImportService = require('./src/services/racingImportService');
+const { startRacingImportCron } = require('./src/jobs/racingImportCron');
+const { todayISO } = require('./src/utils/racingDate');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -354,6 +357,76 @@ app.get('/api/dashboard', (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+// ============ AUTOMATED RACING DATA API ============
+
+// GET /api/racing/meetings/today - Imported racing meetings for today
+app.get('/api/racing/meetings/today', (req, res) => {
+    try {
+        const today = todayISO();
+        const meetings = db.meetings.getImportedByDate(today);
+        const lastImportedAt = db.settings.get('last_racing_import_at') || '';
+        res.json({ date: today, meetings, last_imported_at: lastImportedAt });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/racing/meetings/:id/races - Races for an imported meeting
+app.get('/api/racing/meetings/:id/races', (req, res) => {
+    try {
+        const meetingId = parseInt(req.params.id, 10);
+        const meeting = db.meetings.getById(meetingId);
+        if (!meeting) {
+            return res.status(404).json({ error: 'Meeting not found' });
+        }
+
+        res.json({ meeting, races: db.races.getByMeeting(meetingId) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/racing/races/:id/runners - Runners for an imported race
+app.get('/api/racing/races/:id/runners', (req, res) => {
+    try {
+        const raceId = parseInt(req.params.id, 10);
+        const race = db.races.getById(raceId);
+        if (!race) {
+            return res.status(404).json({ error: 'Race not found' });
+        }
+
+        res.json({ race, runners: db.runners.getByRace(raceId) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/racing/import/today - Manually run configured provider import
+app.post('/api/racing/import/today', async (req, res) => {
+    try {
+        const result = await racingImportService.importToday({
+            providerName: req.body?.provider || process.env.RACING_PROVIDER || 'sample'
+        });
+        res.json(result);
+    } catch (err) {
+        writeAuditLog('RACING_IMPORT_FAILED', 'Manual racing import failed', {
+            entityType: 'racing_import',
+            payload: { error: err.message }
+        });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/racing/import/results - Stub for later provider results import
+app.post('/api/racing/import/results', async (req, res) => {
+    res.json(await racingImportService.importResults(req.body || {}));
+});
+
+// POST /api/racing/import/odds - Stub for later provider odds snapshots
+app.post('/api/racing/import/odds', async (req, res) => {
+    res.json(await racingImportService.importOdds(req.body || {}));
 });
 
 // POST /api/meeting/delete - Delete meeting and related races/runners/selections/bets
@@ -1638,6 +1711,10 @@ app.get('*', (req, res) => {
 // Start server with async init
 async function startServer() {
     await db.initSchema();
+    startRacingImportCron({
+        enabled: process.env.ENABLE_RACING_CRON,
+        importTime: process.env.RACING_IMPORT_TIME
+    });
     
     app.listen(PORT, () => {
         console.log(`

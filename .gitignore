@@ -1,4 +1,5 @@
 node_modules/
+tmp/
 data/*.db
 data/*.sqlite
 data/*.sqlite3
