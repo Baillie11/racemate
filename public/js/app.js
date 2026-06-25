@@ -31,6 +31,7 @@ function detectAppBasePath() {
 }
 
 const APP_BASE_PATH = detectAppBasePath();
+const USER_STORAGE_KEY = 'racemate_current_user_id';
 
 function appUrl(path) {
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
@@ -102,16 +103,33 @@ const state = {
     tracks: createEmptyTrackMap(),
     settings: {},
     bankroll: 0,
+    users: [],
+    currentUser: null,
+    currentUserId: localStorage.getItem(USER_STORAGE_KEY) || '',
     currentMeeting: null,
     currentRace: null,
     activityLogItems: []
 };
 
+const BANKROLL_PERIODS = [
+    ['all_time', 'All Time'],
+    ['today', 'Today'],
+    ['last_7_days', 'Last 7 days'],
+    ['last_month', 'Last month'],
+    ['last_quarter', 'Last Quarter'],
+    ['last_6_months', 'Last 6 months'],
+    ['last_12_months', 'Last 12 months']
+];
+
 // ============ API Helpers ============
 async function api(endpoint, options = {}) {
     try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (state.currentUserId) {
+            headers['X-Racemate-User-Id'] = String(state.currentUserId);
+        }
         const res = await fetch(appUrl(`/api${endpoint}`), {
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             ...options,
             body: options.body ? JSON.stringify(options.body) : undefined
         });
@@ -153,6 +171,7 @@ function toast(message, type = 'success') {
 const routes = {
     '/home': renderToday,
     '/today': renderToday,
+    '/horses': renderHorseProfiles,
     '/race': renderRace,
     '/bet': renderBet,
     '/results': renderResults,
@@ -185,14 +204,41 @@ async function handleRoute() {
 }
 
 // ============ Initialize ============
+async function loadUsers() {
+    const data = await api('/users');
+    state.users = data.users || [];
+    const savedUser = state.currentUserId
+        ? state.users.find(user => String(user.id) === String(state.currentUserId))
+        : null;
+    state.currentUser = savedUser || data.current_user || state.users[0] || null;
+    state.currentUserId = state.currentUser ? String(state.currentUser.id) : '';
+    if (state.currentUserId) {
+        localStorage.setItem(USER_STORAGE_KEY, state.currentUserId);
+    }
+    renderUserSelect();
+}
+
+function renderUserSelect() {
+    const select = document.getElementById('user-select');
+    if (!select) return;
+    select.innerHTML = (state.users || [])
+        .map(user => `<option value="${user.id}" ${String(user.id) === String(state.currentUserId) ? 'selected' : ''}>${escapeHtml(user.name)}</option>`)
+        .join('');
+}
+
+async function refreshUserScopedState() {
+    state.settings = await api('/settings');
+    const bankrollData = await api('/bankroll');
+    state.bankroll = bankrollData.bankroll;
+    updateBankrollDisplay();
+}
+
 async function init() {
     // Load initial data
     try {
+        await loadUsers();
         state.tracks = normalizeTrackMap(await api('/tracks'));
-        state.settings = await api('/settings');
-        const bankrollData = await api('/bankroll');
-        state.bankroll = bankrollData.bankroll;
-        updateBankrollDisplay();
+        await refreshUserScopedState();
     } catch (err) {
         console.error('Init error:', err);
     }
@@ -200,6 +246,25 @@ async function init() {
     // Setup nav toggle
     document.getElementById('nav-toggle').addEventListener('click', () => {
         document.getElementById('nav-links').classList.toggle('show');
+    });
+
+    document.getElementById('user-select')?.addEventListener('change', async (event) => {
+        state.currentUserId = event.target.value;
+        localStorage.setItem(USER_STORAGE_KEY, state.currentUserId);
+        state.currentUser = state.users.find(user => String(user.id) === String(state.currentUserId)) || null;
+        await refreshUserScopedState();
+        await handleRoute();
+    });
+
+    document.getElementById('create-user-btn')?.addEventListener('click', async () => {
+        const name = window.prompt('New user profile name');
+        if (!name || !name.trim()) return;
+        const user = await api('/users', { method: 'POST', body: { name: name.trim() } });
+        state.currentUserId = String(user.id);
+        localStorage.setItem(USER_STORAGE_KEY, state.currentUserId);
+        await loadUsers();
+        await refreshUserScopedState();
+        await handleRoute();
     });
     
     // Initial route
@@ -254,14 +319,6 @@ async function renderToday() {
             </div>
             <button id="refresh-dashboard-btn" class="btn btn-primary btn-block">Refresh Dashboard</button>
         </div>
-        <div class="card">
-            <div class="flex flex-between flex-center mb-2">
-                <h2 class="card-title">Automated Racing Import</h2>
-                <button id="import-racing-today-btn" class="btn btn-primary btn-sm">Import Today's Meetings</button>
-            </div>
-            <div id="racing-import-status" class="text-muted mb-2">Provider: ${escapeHtml(state.settings.racing_provider || 'sample')}</div>
-            <div id="racing-import-content"></div>
-        </div>
         <div id="meeting-content"></div>
     `;
     
@@ -270,8 +327,6 @@ async function renderToday() {
     const trackSelect = document.getElementById('track-select');
     const dateSelect = document.getElementById('date-select');
     const content = document.getElementById('meeting-content');
-    const racingImportContent = document.getElementById('racing-import-content');
-    const racingImportStatus = document.getElementById('racing-import-status');
     
     function updateTracks() {
         const selectedState = stateSelect.value;
@@ -346,6 +401,17 @@ async function renderToday() {
                 return;
             }
 
+            const sortedMeetings = [...data.meetings].sort((a, b) => {
+                const dateCompare = String(a.meeting?.date || '').localeCompare(String(b.meeting?.date || ''));
+                if (dateCompare !== 0) return dateCompare;
+                const trackCompare = String(a.meeting?.track || '').localeCompare(String(b.meeting?.track || ''));
+                if (trackCompare !== 0) return trackCompare;
+                return String(a.meeting?.state || '').localeCompare(String(b.meeting?.state || ''));
+            }).map(item => ({
+                ...item,
+                races: [...(item.races || [])].sort((a, b) => Number(a.race_no || 0) - Number(b.race_no || 0))
+            }));
+
             content.innerHTML = `
                 <div class="section-heading mb-1">Results</div>
                 <div class="stats-grid mb-2">
@@ -362,9 +428,9 @@ async function renderToday() {
                         <div class="stat-label">Pending Bets</div>
                     </div>
                 </div>
-                ${data.meetings.map(item => `
+                ${sortedMeetings.map(item => `
                     <div class="card">
-                        <h2 class="card-title">${item.meeting.track} (${item.meeting.state})</h2>
+                        <h2 class="card-title">${formatRaceDate(item.meeting.date)} - ${item.meeting.track} (${item.meeting.state})</h2>
                         ${item.races.length === 0 ? '<div class="empty-state">No races found</div>' : item.races.map(race => `
                             <div class="runner-item ${!race.result_entered
                                 ? 'runner-result-neutral'
@@ -414,21 +480,6 @@ async function renderToday() {
             }
         });
         await loadDashboard();
-    });
-
-    document.getElementById('import-racing-today-btn').addEventListener('click', async () => {
-        racingImportStatus.textContent = 'Importing today\'s meetings...';
-        try {
-            const result = await api('/racing/import/today', { method: 'POST', body: { provider: state.settings.racing_provider || 'sample' } });
-            const summary = result.summary || {};
-            racingImportStatus.textContent = `Import completed: ${summary.meetings || 0} meetings, ${summary.races || 0} races, ${summary.runners || 0} runners`;
-            toast(result.success ? 'Import completed successfully' : 'Import completed with warnings', result.success ? 'success' : 'warning');
-            await loadImportedRacingData();
-            await loadDashboard();
-        } catch (err) {
-            racingImportStatus.textContent = 'Import failed';
-            racingImportContent.innerHTML = `<div class="empty-state text-danger">Import failed: ${escapeHtml(err.message)}</div>`;
-        }
     });
 
     async function loadImportedRacingData() {
@@ -506,8 +557,209 @@ async function renderToday() {
         }
     }
 
-    loadImportedRacingData();
     loadDashboard();
+}
+
+async function renderHorseProfiles(horseId) {
+    const app = document.getElementById('app');
+    app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+    if (horseId) {
+        try {
+            const data = await api(`/horses/${horseId}`);
+            const horse = data.horse;
+            const summary = data.summary || {};
+            const appearances = data.appearances || [];
+            app.innerHTML = `
+                <div class="flex flex-between flex-center mb-2 horse-profile-heading">
+                    <button class="btn btn-outline" onclick="navigate('#/horses')">&larr; Horse Profiles</button>
+                </div>
+                <div class="card">
+                    <div class="horse-profile-title">
+                        <div>
+                            <h1>${escapeHtml(horse.display_name)}</h1>
+                            <div class="text-muted">
+                                ${horse.latest_trainer ? `Trainer: ${escapeHtml(horse.latest_trainer)}` : 'Trainer not recorded'}
+                                ${horse.last_seen_date ? ` &bull; Last seen ${formatRaceDate(horse.last_seen_date)}` : ''}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="stats-grid mt-2">
+                        <div class="stat-card">
+                            <div class="stat-value">${summary.appearances || 0}</div>
+                            <div class="stat-label">Stored Runs</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">${summary.wins || 0}</div>
+                            <div class="stat-label">Recorded Wins</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value">${summary.places || 0}</div>
+                            <div class="stat-label">Recorded Top 3</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h2 class="card-title">Race History</h2>
+                    ${appearances.length === 0
+                        ? '<div class="empty-state">No retained race appearances</div>'
+                        : appearances.map(run => `
+                            <div class="horse-history-row">
+                                <div class="horse-history-main">
+                                    <div class="runner-name">${formatRaceDate(run.date)} &bull; ${escapeHtml(run.track)} (${escapeHtml(run.state)}) &bull; R${run.race_no}</div>
+                                    <div class="runner-meta">${escapeHtml(run.race_name || `Race ${run.race_no}`)} &bull; ${run.start_time ? escapeHtml(run.start_time) : 'Time TBA'} &bull; ${run.distance || '-'}m</div>
+                                    <div class="runner-meta">
+                                        No. ${run.saddle_no || '-'} &bull; Barrier ${run.barrier || '-'} &bull; ${run.weight || '-'}kg
+                                        &bull; Jockey ${escapeHtml(run.jockey || '-')} &bull; Trainer ${escapeHtml(run.trainer || '-')}
+                                    </div>
+                                    <div class="runner-meta">
+                                        Form ${escapeHtml(run.form_string || '-')} &bull; Rating ${run.rating || '-'}
+                                        &bull; Win odds ${run.odds_win ? `$${Number(run.odds_win).toFixed(2)}` : '-'}
+                                    </div>
+                                </div>
+                                <div class="horse-history-result">
+                                    ${run.scratched
+                                        ? '<span class="status-badge pending">Scratched</span>'
+                                        : run.finishing_position
+                                            ? `<span class="status-badge ${Number(run.finishing_position) === 1 ? 'won' : 'placed'}">${Number(run.finishing_position)}${Number(run.finishing_position) === 1 ? 'st' : Number(run.finishing_position) === 2 ? 'nd' : Number(run.finishing_position) === 3 ? 'rd' : 'th'}</span>`
+                                            : '<span class="status-badge pending">Result pending</span>'}
+                                    <button class="btn btn-outline btn-sm" onclick="navigate('#/race/${run.race_id}')">Open Race</button>
+                                </div>
+                            </div>
+                        `).join('')}
+                </div>
+            `;
+        } catch (err) {
+            app.innerHTML = `<div class="empty-state text-danger">${escapeHtml(err.message)}</div>`;
+        }
+        return;
+    }
+
+    try {
+        const [catalogue, importData] = await Promise.all([
+            api('/horses'),
+            api('/racing/meetings/today')
+        ]);
+        const horses = catalogue.horses || [];
+        const profileSummary = catalogue.summary || {};
+        const importSummary = importData.summary || {};
+
+        app.innerHTML = `
+            <div class="card">
+                <div class="horse-page-toolbar">
+                    <div>
+                        <h1 class="page-title">Horse Profiles</h1>
+                        <div class="text-muted">Permanent profiles built from imported race appearances.</div>
+                    </div>
+                    <div class="horse-search">
+                        <input id="horse-search-input" class="form-control" type="search" placeholder="Search horse or trainer" aria-label="Search horse profiles">
+                        <button id="horse-search-btn" class="btn btn-outline">Search</button>
+                    </div>
+                </div>
+                <div class="stats-grid mt-2">
+                    <div class="stat-card">
+                        <div class="stat-value">${profileSummary.profiles || horses.length}</div>
+                        <div class="stat-label">Horse Profiles</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${profileSummary.appearances || 0}</div>
+                        <div class="stat-label">Stored Runs</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${profileSummary.repeat_runners || 0}</div>
+                        <div class="stat-label">Repeat Runners</div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="flex flex-between flex-center horse-import-toolbar">
+                    <div>
+                        <h2 class="card-title">Automated Racing Import</h2>
+                        <div id="horse-import-status" class="text-muted">
+                            ${importData.last_imported_at
+                                ? `Last imported ${new Date(importData.last_imported_at).toLocaleString()}`
+                                : 'No automated import run yet'}
+                        </div>
+                        <div id="horse-import-summary" class="runner-meta">
+                            Today: ${importSummary.meetings || 0} meetings &bull; ${importSummary.races || 0} races &bull; ${importSummary.runners || 0} runners
+                        </div>
+                    </div>
+                    <button id="horse-import-btn" class="btn btn-primary">Import Today's Meetings</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="flex flex-between flex-center mb-2">
+                    <h2 class="card-title">Profile Catalogue</h2>
+                    <div id="horse-result-count" class="text-muted">Showing ${horses.length} of ${profileSummary.profiles || horses.length} profiles</div>
+                </div>
+                <div id="horse-profile-list">${renderHorseProfileRows(horses)}</div>
+            </div>
+        `;
+
+        const searchInput = document.getElementById('horse-search-input');
+        const profileList = document.getElementById('horse-profile-list');
+        const resultCount = document.getElementById('horse-result-count');
+
+        async function runHorseSearch() {
+            profileList.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            try {
+                const result = await api(`/horses?search=${encodeURIComponent(searchInput.value.trim())}`);
+                const matches = result.horses || [];
+                resultCount.textContent = `${matches.length} ${matches.length === 1 ? 'profile' : 'profiles'}`;
+                profileList.innerHTML = renderHorseProfileRows(matches);
+            } catch (err) {
+                profileList.innerHTML = `<div class="empty-state text-danger">${escapeHtml(err.message)}</div>`;
+            }
+        }
+
+        document.getElementById('horse-search-btn').addEventListener('click', runHorseSearch);
+        searchInput.addEventListener('keydown', event => {
+            if (event.key === 'Enter') runHorseSearch();
+        });
+
+        document.getElementById('horse-import-btn').addEventListener('click', async event => {
+            const button = event.currentTarget;
+            const status = document.getElementById('horse-import-status');
+            const summary = document.getElementById('horse-import-summary');
+            button.disabled = true;
+            status.textContent = 'Importing today\'s meetings...';
+            try {
+                const result = await api('/racing/import/today', {
+                    method: 'POST',
+                    body: { provider: state.settings.racing_provider || 'sample' }
+                });
+                const imported = result.summary || {};
+                status.textContent = result.success ? 'Import completed successfully' : 'Import completed with warnings';
+                summary.textContent = `${imported.meetings || 0} meetings • ${imported.races || 0} races • ${imported.runners || 0} runners`;
+                toast(status.textContent, result.success ? 'success' : 'warning');
+                await renderHorseProfiles();
+            } catch (err) {
+                status.textContent = 'Import failed';
+            } finally {
+                button.disabled = false;
+            }
+        });
+    } catch (err) {
+        app.innerHTML = `<div class="empty-state text-danger">${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function renderHorseProfileRows(horses) {
+    if (!horses.length) {
+        return '<div class="empty-state">No horse profiles found</div>';
+    }
+
+    return horses.map(horse => `
+        <button class="horse-profile-row" type="button" onclick="navigate('#/horses/${horse.id}')">
+            <span class="horse-profile-name">${escapeHtml(horse.display_name)}</span>
+            <span class="horse-profile-meta">
+                ${Number(horse.appearances || 0)} stored ${Number(horse.appearances || 0) === 1 ? 'run' : 'runs'}
+                ${horse.latest_trainer ? ` &bull; ${escapeHtml(horse.latest_trainer)}` : ''}
+                ${horse.latest_race_date ? ` &bull; Last seen ${formatRaceDate(horse.latest_race_date)}` : ''}
+            </span>
+            <span class="horse-profile-arrow" aria-hidden="true">&rsaquo;</span>
+        </button>
+    `).join('');
 }
 
 async function deleteRaceFromHome(raceId) {
@@ -912,12 +1164,41 @@ async function renderBet(runnerId) {
             <div id="payout-preview" class="text-muted mb-2"></div>
             <button id="place-bet-btn" class="btn btn-success btn-block">Confirm Bet</button>
         </div>
+
+        <div id="another-bet-modal" class="modal-overlay hidden">
+            <div class="modal">
+                <div class="modal-header">
+                    <div class="modal-title">Bet Placed Successfully</div>
+                </div>
+                <div class="modal-body">
+                    <div class="bet-success-summary">
+                        <div class="bet-success-title">${runner.saddle_no}. ${escapeHtml(runner.horse_name)}</div>
+                        <div class="runner-meta">${escapeHtml(state.currentRace.meeting.track)} R${state.currentRace.race_no}: ${escapeHtml(state.currentRace.race_name || `Race ${state.currentRace.race_no}`)}</div>
+                        <div id="bet-success-stake" class="bet-success-stake"></div>
+                    </div>
+                    <div class="mt-2 text-center">Would you like to place another bet?</div>
+                </div>
+                <div class="modal-footer">
+                    <button id="another-bet-no" class="btn btn-outline" type="button">No</button>
+                    <button id="another-bet-yes" class="btn btn-primary" type="button">Yes</button>
+                </div>
+            </div>
+        </div>
     `;
 
     const goBankrollBtn = document.getElementById('go-bankroll-btn');
     if (goBankrollBtn) {
         goBankrollBtn.addEventListener('click', () => navigate('#/bankroll'));
     }
+    const anotherBetModal = document.getElementById('another-bet-modal');
+    document.getElementById('another-bet-yes').addEventListener('click', () => {
+        anotherBetModal.classList.add('hidden');
+        navigate('#/settings');
+    });
+    document.getElementById('another-bet-no').addEventListener('click', () => {
+        anotherBetModal.classList.add('hidden');
+        navigate('#/home');
+    });
     
     // Update payout preview
     function updatePreview() {
@@ -944,6 +1225,7 @@ async function renderBet(runnerId) {
     
     // Place bet
     document.getElementById('place-bet-btn').addEventListener('click', async () => {
+        const placeBetButton = document.getElementById('place-bet-btn');
         const oddsWin = parseFloat(document.getElementById('odds-win').value);
         const oddsPlace = parseFloat(document.getElementById('odds-place').value);
         const stakeWin = parseFloat(document.getElementById('stake-win').value) || 0;
@@ -960,6 +1242,8 @@ async function renderBet(runnerId) {
         }
         
         try {
+            placeBetButton.disabled = true;
+            placeBetButton.textContent = 'Placing Bet...';
             const result = await api('/bets', {
                 method: 'POST',
                 silentError: true,
@@ -976,9 +1260,12 @@ async function renderBet(runnerId) {
             updateBankrollDisplay();
             
             toast('Bet placed successfully!', 'success');
-            navigate('#/results');
+            document.getElementById('bet-success-stake').textContent = `Total stake: $${(stakeWin + stakePlace).toFixed(2)}`;
+            anotherBetModal.classList.remove('hidden');
             
         } catch (err) {
+            placeBetButton.disabled = false;
+            placeBetButton.textContent = 'Confirm Bet';
             const issues = err.details?.issues || [];
             const bankrollIssue = issues.find(i => i.type === 'bankroll_floor');
 
@@ -1013,9 +1300,7 @@ async function renderResults(preselectedRaceId) {
             }))
         );
 
-        const raceOptions = pendingRaces.length > 0
-            ? pendingRaces
-            : [...new Map(dashboardRaces.map(r => [r.race_id, r])).values()];
+        const raceOptions = [...new Map([...pendingRaces, ...dashboardRaces].map(r => [r.race_id, r])).values()];
         const raceIdToSelect = parseInt(preselectedRaceId, 10);
 
         if (Number.isInteger(raceIdToSelect) && raceIdToSelect > 0 && !raceOptions.some(r => r.race_id === raceIdToSelect)) {
@@ -1035,114 +1320,271 @@ async function renderResults(preselectedRaceId) {
         
         app.innerHTML = `
             <div class="card">
-                <h2 class="card-title">🏁 Enter Race Result</h2>
-                <div class="form-group">
-                    <label class="form-label">Race</label>
-                    <select id="result-race-select" class="form-control">
-                        <option value="">Select race...</option>
-                        ${raceOptions.map(race => `
-                            <option value="${race.race_id}" ${race.race_id === raceIdToSelect ? 'selected' : ''}>${race.track} R${race.race_no} - ${race.race_name}</option>
-                        `).join('')}
-                    </select>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">1st</label>
-                        <input type="number" min="1" step="1" id="result-first" class="form-control" placeholder="9">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">2nd</label>
-                        <input type="number" min="1" step="1" id="result-second" class="form-control" placeholder="4">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">3rd</label>
-                        <input type="number" min="1" step="1" id="result-third" class="form-control" placeholder="1">
-                    </div>
-                </div>
-                <button id="settle-race-btn" class="btn btn-primary btn-block">Settle Race</button>
-                <div id="settle-race-status" class="mt-2 text-muted">Enter the saddle numbers in finishing order, for example 9, 4, 1.</div>
-            </div>
-
-            <div class="card">
-                <h2 class="card-title">⏳ Pending Bets</h2>
+                <h2 class="card-title">Pending Bets</h2>
                 ${bets.length === 0 ? '<div class="empty-state">No pending bets</div>' :
-                    bets.map(bet => renderBetItem(bet, true)).join('')}
+                    renderPendingBetsGrouped(bets)}
             </div>
             
             <div class="card">
-                <h2 class="card-title">📜 Bet History</h2>
+                <h2 class="card-title">Bet History</h2>
                 ${allBets.filter(b => b.status !== 'pending').length === 0 ? 
                     '<div class="empty-state">No settled bets yet</div>' :
                     allBets.filter(b => b.status !== 'pending').slice(0, 20).map(bet => renderBetItem(bet, false)).join('')}
             </div>
+
+            <div id="settle-race-modal" class="modal-overlay hidden">
+                <div class="modal">
+                    <div class="modal-header">
+                        <div class="modal-title">Settle Race</div>
+                        <button id="settle-modal-close" class="modal-close" type="button">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" id="settle-modal-race-id">
+                        <div class="runner-name" id="settle-modal-race-title"></div>
+                        <div class="runner-meta mb-2" id="settle-modal-race-meta"></div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">1st</label>
+                                <input type="number" min="1" step="1" id="settle-modal-first" class="form-control" placeholder="9">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">2nd</label>
+                                <input type="number" min="1" step="1" id="settle-modal-second" class="form-control" placeholder="4">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">3rd</label>
+                                <input type="number" min="1" step="1" id="settle-modal-third" class="form-control" placeholder="1">
+                            </div>
+                        </div>
+                        <div id="settle-modal-status" class="mt-2 text-muted">Enter the saddle numbers in finishing order, for example 9, 4, 1.</div>
+                    </div>
+                    <div class="modal-footer">
+                        <button id="settle-modal-cancel" class="btn btn-outline" type="button">Cancel</button>
+                        <button id="settle-modal-more" class="btn btn-outline hidden" type="button">Enter More Results</button>
+                        <button id="settle-modal-submit" class="btn btn-primary" type="button">Settle Race</button>
+                    </div>
+                </div>
+            </div>
         `;
 
-        function updateExistingResultHint() {
-            const raceId = parseInt(document.getElementById('result-race-select').value, 10);
-            const status = document.getElementById('settle-race-status');
-            const selected = raceOptions.find(r => r.race_id === raceId);
-            if (!selected || !selected.result_entered || !selected.placings) {
-                status.innerHTML = 'Enter the saddle numbers in finishing order, for example 9, 4, 1.';
+        const settleModal = document.getElementById('settle-race-modal');
+        const status = document.getElementById('settle-modal-status');
+        const submitButton = document.getElementById('settle-modal-submit');
+        const cancelButton = document.getElementById('settle-modal-cancel');
+        const moreResultsButton = document.getElementById('settle-modal-more');
+        const resultInputs = [
+            document.getElementById('settle-modal-first'),
+            document.getElementById('settle-modal-second'),
+            document.getElementById('settle-modal-third')
+        ];
+        let settlementCompleted = false;
+
+        async function closeSettleRaceModal() {
+            settleModal.classList.add('hidden');
+            if (settlementCompleted) {
+                settlementCompleted = false;
+                await renderResults();
+            }
+        }
+
+        window.openSettleRaceModal = (raceId) => {
+            const selectedRaceId = parseInt(raceId, 10);
+            const selected = raceOptions.find(r => r.race_id === selectedRaceId);
+            if (!selected) {
+                toast('Race details were not found', 'warning');
                 return;
             }
 
-            document.getElementById('result-first').value = selected.placings.first || '';
-            document.getElementById('result-second').value = selected.placings.second || '';
-            document.getElementById('result-third').value = selected.placings.third || '';
-            status.innerHTML = `<span class="text-success">Results already entered: ${selected.placings.first || '-'}-${selected.placings.second || '-'}-${selected.placings.third || '-'} • ${selected.outcome_text || 'No win'}</span>`;
-        }
+            document.getElementById('settle-modal-race-id').value = selected.race_id;
+            document.getElementById('settle-modal-race-title').textContent = `R${selected.race_no}: ${selected.race_name || `Race ${selected.race_no}`}`;
+            document.getElementById('settle-modal-race-meta').textContent = selected.track || 'Unknown track';
+            document.getElementById('settle-modal-first').value = selected.placings?.first || '';
+            document.getElementById('settle-modal-second').value = selected.placings?.second || '';
+            document.getElementById('settle-modal-third').value = selected.placings?.third || '';
+            resultInputs.forEach(input => { input.disabled = false; });
+            submitButton.textContent = 'Settle Race';
+            cancelButton.classList.remove('hidden');
+            moreResultsButton.classList.add('hidden');
+            settlementCompleted = false;
 
-        document.getElementById('result-race-select').addEventListener('change', updateExistingResultHint);
-        updateExistingResultHint();
+            status.innerHTML = selected.result_entered && selected.placings
+                ? `<span class="text-success">Results already entered: ${selected.placings.first || '-'}-${selected.placings.second || '-'}-${selected.placings.third || '-'} - ${selected.outcome_text || 'No win'}</span>`
+                : 'Enter the saddle numbers in finishing order, for example 9, 4, 1.';
 
-        const settleRaceBtn = document.getElementById('settle-race-btn');
-        if (settleRaceBtn) {
-            settleRaceBtn.addEventListener('click', async () => {
-                const raceId = document.getElementById('result-race-select').value;
-                const first = document.getElementById('result-first').value;
-                const second = document.getElementById('result-second').value;
-                const third = document.getElementById('result-third').value;
-                const status = document.getElementById('settle-race-status');
+            settleModal.classList.remove('hidden');
+            document.getElementById('settle-modal-first').focus();
+        };
 
-                if (!raceId) {
-                    toast('Please select a race', 'warning');
-                    return;
+        document.getElementById('settle-modal-close').addEventListener('click', closeSettleRaceModal);
+        document.getElementById('settle-modal-cancel').addEventListener('click', closeSettleRaceModal);
+        moreResultsButton.addEventListener('click', async () => {
+            const currentRaceId = parseInt(document.getElementById('settle-modal-race-id').value, 10);
+            const nextRace = pendingRaces.find(race => Number(race.race_id) !== currentRaceId);
+
+            settleModal.classList.add('hidden');
+            settlementCompleted = false;
+
+            if (nextRace) {
+                await renderResults(nextRace.race_id);
+            } else {
+                toast('All pending races have been settled', 'success');
+                await renderResults();
+            }
+        });
+        settleModal.addEventListener('click', (event) => {
+            if (event.target === settleModal) closeSettleRaceModal();
+        });
+
+        document.getElementById('settle-modal-submit').addEventListener('click', async () => {
+            if (settlementCompleted) {
+                await closeSettleRaceModal();
+                return;
+            }
+
+            const raceId = document.getElementById('settle-modal-race-id').value;
+            const first = document.getElementById('settle-modal-first').value;
+            const second = document.getElementById('settle-modal-second').value;
+            const third = document.getElementById('settle-modal-third').value;
+
+            if (!raceId) {
+                toast('Please select a race', 'warning');
+                return;
+            }
+
+            if (!first && !second && !third) {
+                toast('Enter at least the 1st place saddle number', 'warning');
+                return;
+            }
+
+            status.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+            try {
+                const result = await api('/results/race', {
+                    method: 'POST',
+                    body: { race_id: parseInt(raceId, 10), first, second, third }
+                });
+
+                if (typeof result.bankroll === 'number') {
+                    state.bankroll = result.bankroll;
+                    updateBankrollDisplay();
                 }
 
-                if (!first && !second && !third) {
-                    toast('Enter at least the 1st place saddle number', 'warning');
-                    return;
-                }
+                const totalProfit = Number(result.summary?.total_profit || 0);
+                const settled = Array.isArray(result.settled) ? result.settled : [];
+                const outcomeClass = totalProfit > 0
+                    ? 'settlement-outcome-win'
+                    : (totalProfit < 0 ? 'settlement-outcome-loss' : 'settlement-outcome-neutral');
+                const outcomeLabel = totalProfit > 0
+                    ? 'WIN'
+                    : (totalProfit < 0 ? 'LOSS' : (settled.length ? 'NO PROFIT' : 'NO BETS'));
+                const amountText = totalProfit > 0
+                    ? `Won $${totalProfit.toFixed(2)}`
+                    : (totalProfit < 0 ? `Lost $${Math.abs(totalProfit).toFixed(2)}` : result.summary?.outcome_text || 'No bets were settled');
+                const settledDetails = settled.map(item => {
+                    const itemProfit = Number(item.profit || 0);
+                    const itemResult = item.result === 'won'
+                        ? 'Won'
+                        : (item.result === 'placed' ? 'Placed' : 'Lost');
+                    const itemAmount = itemProfit > 0
+                        ? `+$${itemProfit.toFixed(2)}`
+                        : (itemProfit < 0 ? `-$${Math.abs(itemProfit).toFixed(2)}` : '$0.00');
+                    return `
+                        <div class="settlement-outcome-detail">
+                            <span>${escapeHtml(item.saddle_no)}. ${escapeHtml(item.horse_name)} - ${itemResult}</span>
+                            <strong>${itemAmount}</strong>
+                        </div>
+                    `;
+                }).join('');
 
-                status.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+                status.innerHTML = `
+                    <div class="settlement-outcome ${outcomeClass}">
+                        <div class="settlement-outcome-label">${outcomeLabel}</div>
+                        <div class="settlement-outcome-amount">${amountText}</div>
+                        ${settledDetails ? `<div class="settlement-outcome-details">${settledDetails}</div>` : ''}
+                    </div>
+                `;
+                settlementCompleted = true;
+                resultInputs.forEach(input => { input.disabled = true; });
+                submitButton.textContent = 'Done';
+                cancelButton.classList.add('hidden');
+                moreResultsButton.classList.remove('hidden');
+                toast(amountText, totalProfit > 0 ? 'success' : (totalProfit < 0 ? 'error' : 'success'));
+            } catch (err) {
+                status.innerHTML = `<div class="text-danger">${err.message}</div>`;
+            }
+        });
 
-                try {
-                    const result = await api('/results/race', {
-                        method: 'POST',
-                        body: { race_id: parseInt(raceId), first, second, third }
-                    });
-
-                    if (typeof result.bankroll === 'number') {
-                        state.bankroll = result.bankroll;
-                        updateBankrollDisplay();
-                    }
-
-                    if (result.settled?.length) {
-                        status.innerHTML = `<div class="text-success">Settled ${result.settled.length} bet(s) for ${result.race.track} R${result.race.race_no}. ${result.summary?.outcome_text || ''}</div>`;
-                    } else {
-                        status.innerHTML = `<div class="text-muted">${result.summary?.outcome_text || result.message || 'No pending bets found for this race'}</div>`;
-                    }
-                    toast('Race settled successfully!', 'success');
-                    await renderResults();
-                } catch (err) {
-                    status.innerHTML = `<div class="text-danger">${err.message}</div>`;
-                }
-            });
+        if (Number.isInteger(raceIdToSelect) && raceIdToSelect > 0) {
+            window.openSettleRaceModal(raceIdToSelect);
         }
         
     } catch (err) {
         app.innerHTML = `<div class="empty-state text-danger">${err.message}</div>`;
     }
+}
+
+function renderPendingBetsGrouped(bets) {
+    const byDate = new Map();
+
+    bets.forEach(bet => {
+        const date = bet.date || 'Unknown date';
+        const track = bet.track || 'Unknown track';
+        const raceNo = bet.race_no ?? '?';
+        const raceName = bet.race_name || `Race ${raceNo}`;
+        const startTime = bet.start_time || 'TBA';
+        const raceKey = `${bet.race_id || `${track}-${raceNo}`}`;
+
+        if (!byDate.has(date)) {
+            byDate.set(date, new Map());
+        }
+
+        const dateGroup = byDate.get(date);
+        if (!dateGroup.has(track)) {
+            dateGroup.set(track, new Map());
+        }
+
+        const trackGroup = dateGroup.get(track);
+        if (!trackGroup.has(raceKey)) {
+            trackGroup.set(raceKey, {
+                raceNo,
+                raceName,
+                startTime,
+                bets: []
+            });
+        }
+
+        trackGroup.get(raceKey).bets.push(bet);
+    });
+
+    return [...byDate.entries()]
+        .sort(([dateA], [dateB]) => String(dateA).localeCompare(String(dateB)))
+        .map(([date, tracks]) => `
+            <div class="pending-date-group">
+                <div class="section-heading">${escapeHtml(formatRaceDate(date))}</div>
+                ${[...tracks.entries()]
+                    .sort(([trackA], [trackB]) => trackA.localeCompare(trackB))
+                    .map(([track, races]) => {
+                        const raceBlocks = [...races.values()]
+                            .sort((a, b) => Number(a.raceNo) - Number(b.raceNo))
+                            .map(race => `
+                                <div class="pending-race-group">
+                                    <div class="pending-race-title">R${race.raceNo}: ${escapeHtml(race.raceName)} <span class="text-muted">Jump: ${escapeHtml(race.startTime)}</span></div>
+                                    ${race.bets.map(bet => renderBetItem(bet, true)).join('')}
+                                </div>
+                            `)
+                            .join('');
+
+                        return `
+                            <div class="pending-track-group">
+                                <div class="section-heading">${escapeHtml(track)}</div>
+                                ${raceBlocks}
+                            </div>
+                        `;
+                    })
+                    .join('')}
+            </div>
+        `)
+        .join('');
 }
 
 function renderBetItem(bet, showActions) {
@@ -1156,6 +1598,17 @@ function renderBetItem(bet, showActions) {
     const horseName = bet.horse_name || 'Unknown runner';
     const track = bet.track || 'Unknown track';
     const raceNo = bet.race_no ?? '?';
+    const raceName = bet.race_name || `Race ${raceNo}`;
+    const startTime = bet.start_time || 'TBA';
+    const raceResult = [bet.first_saddle, bet.second_saddle, bet.third_saddle]
+        .filter(value => value !== null && value !== undefined && value !== '')
+        .join('-');
+    const stakeParts = [];
+    if (stakeWin > 0) stakeParts.push(`Win stake $${stakeWin.toFixed(2)} @ ${oddsWin ? oddsWin.toFixed(2) : '-'}`);
+    if (stakePlace > 0) stakeParts.push(`Place stake $${stakePlace.toFixed(2)} @ ${oddsPlace ? oddsPlace.toFixed(2) : '-'}`);
+    const returnParts = [];
+    if (payoutWin > 0) returnParts.push(`Win return $${payoutWin.toFixed(2)}`);
+    if (payoutPlace > 0) returnParts.push(`Place return $${payoutPlace.toFixed(2)}`);
 
     const statusBadge = {
         'pending': 'badge-warning',
@@ -1168,41 +1621,39 @@ function renderBetItem(bet, showActions) {
     const profit = (payoutWin + payoutPlace) - (stakeWin + stakePlace);
     const totalReturn = payoutWin + payoutPlace;
 
-    let wonDisplay = '-';
-    let placedDisplay = '-';
     let totalDisplay = '-';
 
     if (bet.status === 'pending') {
-        wonDisplay = 'Pending';
-        placedDisplay = 'Pending';
         totalDisplay = 'Pending';
     } else if (bet.status === 'lost') {
         totalDisplay = 'Lost';
     } else if (bet.status === 'void') {
         totalDisplay = 'Void';
     } else {
-        wonDisplay = payoutWin > 0 ? `$${payoutWin.toFixed(2)}` : '-';
-        placedDisplay = payoutPlace > 0 ? `$${payoutPlace.toFixed(2)}` : '-';
-        totalDisplay = totalReturn > 0 ? `$${totalReturn.toFixed(2)}` : (bet.status === 'lost' ? 'Lost' : '-');
+        totalDisplay = totalReturn > 0 ? `$${totalReturn.toFixed(2)}` : '-';
     }
     
     return `
         <div class="runner-item">
             <div class="runner-info">
                 <div class="runner-name">${saddleNo}. ${horseName}</div>
+                <div class="runner-meta">${track} R${raceNo}: ${raceName}</div>
+                <div class="runner-meta">Jump: ${startTime}</div>
+                ${raceResult ? `<div class="runner-meta">Results: ${raceResult}</div>` : ''}
                 <div class="runner-meta">
-                    ${track} R${raceNo} • 
-                    Win $${stakeWin.toFixed(2)} @ ${oddsWin ? oddsWin.toFixed(2) : '-'} • 
-                    Place $${stakePlace.toFixed(2)} @ ${oddsPlace ? oddsPlace.toFixed(2) : '-'}
+                    ${bet.status === 'pending' ? stakeParts.join(' - ') : ''}
+                    ${bet.status !== 'pending' && returnParts.length ? returnParts.join(' - ') : ''}
                 </div>
             </div>
             <div class="runner-odds text-right">
                 <span class="badge ${statusBadge}">${bet.status.toUpperCase()}</span>
-                <div class="text-muted">Won: ${wonDisplay}</div>
-                <div class="text-muted">Placed: ${placedDisplay}</div>
+                ${returnParts.length ? `<div class="text-muted">${returnParts.join('<br>')}</div>` : ''}
                 <div class="${bet.status === 'lost' ? 'text-danger' : (profit >= 0 ? 'text-success' : 'text-danger')}">Total: ${totalDisplay}</div>
                 ${bet.status !== 'pending' && totalDisplay !== 'Lost' && totalDisplay !== 'Void' ? `
                     <div class="${profit >= 0 ? 'text-success' : 'text-danger'}">P/L: ${profit >= 0 ? '+' : ''}$${profit.toFixed(2)}</div>
+                ` : ''}
+                ${showActions && bet.status === 'pending' ? `
+                    <button class="btn btn-primary btn-sm mt-1" type="button" onclick="openSettleRaceModal(${bet.race_id})">Settle Race</button>
                 ` : ''}
             </div>
         </div>
@@ -1228,8 +1679,18 @@ async function renderBankroll() {
     app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
     
     try {
-        const summary = await api('/bankroll/summary');
-        const history = await api('/stats/history?days=30');
+        const selectedPeriod = state.bankrollPeriod || 'all_time';
+        const periodQuery = `period=${encodeURIComponent(selectedPeriod)}`;
+        const summary = await api(`/bankroll/summary?${periodQuery}`);
+        const history = await api(`/stats/history?${periodQuery}`);
+        const periodOptions = BANKROLL_PERIODS
+            .map(([value, label]) => `<option value="${value}" ${value === selectedPeriod ? 'selected' : ''}>${label}</option>`)
+            .join('');
+        const periodLabel = summary.period?.label || 'selected period';
+        const netProfitSign = summary.netProfit > 0 ? '+' : '';
+        const winsLabel = `${summary.betting.wins} ${summary.betting.wins === 1 ? 'win' : 'wins'}`;
+        const placesLabel = `${summary.betting.places} ${summary.betting.places === 1 ? 'place' : 'places'}`;
+        const lossesLabel = `${summary.betting.losses} ${summary.betting.losses === 1 ? 'loss' : 'losses'}`;
         
         app.innerHTML = `
             ${summary.bankroll === 0 && summary.totals.deposits === 0 ? `
@@ -1244,21 +1705,34 @@ async function renderBankroll() {
             ` : ''}
             
             <div class="stats-grid mb-2">
-                <div class="stat-card">
+                <div class="stat-card" tabindex="0"
+                     aria-label="Bankroll: $${summary.bankroll.toFixed(2)}. Current available balance after all deposits, withdrawals, stakes and payouts."
+                     data-tooltip="Current available balance after all deposits, withdrawals, stakes and payouts. This is your live balance and is not limited by the Statistics period.">
+                    <span class="stat-info" aria-hidden="true">i</span>
                     <div class="stat-value ${summary.bankroll >= 0 ? 'positive' : 'negative'}">$${summary.bankroll.toFixed(2)}</div>
                     <div class="stat-label">Bankroll</div>
                 </div>
-                <div class="stat-card">
+                <div class="stat-card" tabindex="0"
+                     aria-label="ROI: ${summary.roiPercent.toFixed(1)} percent. Net result ${netProfitSign}$${summary.netProfit.toFixed(2)} for ${periodLabel}."
+                     data-tooltip="Return on investment for ${periodLabel}: net result divided by total stakes. The dollar amount is returns minus stakes.">
+                    <span class="stat-info" aria-hidden="true">i</span>
                     <div class="stat-value ${summary.roiPercent >= 0 ? 'positive' : 'negative'}">${summary.roiPercent.toFixed(1)}%</div>
+                    <div class="stat-secondary ${summary.netProfit >= 0 ? 'positive' : 'negative'}">Net ${netProfitSign}$${summary.netProfit.toFixed(2)}</div>
                     <div class="stat-label">ROI</div>
                 </div>
-                <div class="stat-card">
+                <div class="stat-card" tabindex="0"
+                     aria-label="Win Rate: ${summary.betting.winRatePercent.toFixed(1)} percent. Winning bets divided by settled bets for ${periodLabel}."
+                     data-tooltip="Winning bets divided by all settled bets for ${periodLabel}. Pending bets are excluded.">
+                    <span class="stat-info" aria-hidden="true">i</span>
                     <div class="stat-value">${summary.betting.winRatePercent.toFixed(1)}%</div>
                     <div class="stat-label">Win Rate</div>
                 </div>
-                <div class="stat-card">
+                <div class="stat-card" tabindex="0"
+                     aria-label="Settled Bets: ${summary.betting.totalBets}. Settled bets for ${periodLabel}; ${winsLabel}, ${placesLabel} and ${lossesLabel}. Pending bets are excluded."
+                     data-tooltip="Settled bets for ${periodLabel}: ${winsLabel} + ${placesLabel} + ${lossesLabel}. Pending bets are not counted.">
+                    <span class="stat-info" aria-hidden="true">i</span>
                     <div class="stat-value">${summary.betting.totalBets}</div>
-                    <div class="stat-label">Total Bets</div>
+                    <div class="stat-label">Settled Bets</div>
                 </div>
             </div>
             
@@ -1268,7 +1742,12 @@ async function renderBankroll() {
             </div>
             
             <div class="card">
-                <h2 class="card-title">📊 Statistics</h2>
+                <div class="flex-between mb-2">
+                    <h2 class="card-title mb-0">Statistics</h2>
+                    <select id="bankroll-period-select" class="form-control bankroll-period-select">
+                        ${periodOptions}
+                    </select>
+                </div>
                 <div class="table-wrap">
                     <table class="table">
                         <tr><td>Wins</td><td class="text-right">${summary.betting.wins}</td></tr>
@@ -1294,14 +1773,19 @@ async function renderBankroll() {
                     <button class="btn btn-success" onclick="manageFunds('deposit')">Deposit</button>
                     <button class="btn btn-warning" onclick="manageFunds('withdraw')">Withdraw</button>
                 </div>
+                <div class="mt-2">
+                    <div class="section-heading mb-1">Deposits & Withdrawals</div>
+                    ${renderFundTransactionRows(history)}
+                </div>
             </div>
             
             <div class="card">
                 <h2 class="card-title">📤 Export</h2>
                 <div class="flex gap-1">
-                    <a href="${appUrl('/api/export/bets')}" class="btn btn-outline" download>Export Bets CSV</a>
-                    <a href="${appUrl('/api/export/transactions')}" class="btn btn-outline" download>Export Transactions</a>
+                    <a href="${appUrl(`/api/export/bets?${periodQuery}`)}" class="btn btn-outline" download>Export Bets CSV</a>
+                    <a href="${appUrl(`/api/export/transactions?${periodQuery}`)}" class="btn btn-outline" download>Export Transactions</a>
                 </div>
+                <div class="runner-meta mt-1">Exports use the selected Statistics period.</div>
             </div>
         `;
         
@@ -1323,6 +1807,11 @@ async function renderBankroll() {
                 } catch (err) {}
             });
         }
+
+        document.getElementById('bankroll-period-select')?.addEventListener('change', async (event) => {
+            state.bankrollPeriod = event.target.value;
+            await renderBankroll();
+        });
         
         // Draw chart
         drawChart(history);
@@ -1345,6 +1834,7 @@ async function manageFunds(action) {
         updateBankrollDisplay();
         toast(`${action.charAt(0).toUpperCase() + action.slice(1)} successful!`, 'success');
         document.getElementById('fund-amount').value = '';
+        await renderBankroll();
     } catch (err) {}
 }
 window.manageFunds = manageFunds;
@@ -1553,6 +2043,83 @@ function formatLogPayload(payload) {
         .join(' | ');
 }
 
+function formatTransactionLabel(tx) {
+    if (!tx) return 'Transaction';
+    if (tx.type === 'bet_stake') return 'Bet';
+    if (tx.type === 'payout') {
+        if (tx.description && /win/i.test(tx.description)) return 'Win';
+        if (tx.description && /place/i.test(tx.description)) return 'Place';
+        if (tx.description && /void/i.test(tx.description)) return 'Void';
+        return 'Payout';
+    }
+    if (tx.type === 'deposit') return 'Deposit';
+    if (tx.type === 'withdrawal') return 'Withdraw';
+    return tx.type ? tx.type.replace(/_/g, ' ') : 'Transaction';
+}
+
+function formatTransactionDetail(tx) {
+    const amount = Number(tx.amount || 0);
+    const parts = [`${formatTransactionLabel(tx)} ${amount >= 0 ? '+' : '-'}$${Math.abs(amount).toFixed(2)}`];
+
+    if (tx.track || tx.race_no || tx.race_name) {
+        parts.push(`${tx.track || 'Unknown'} R${tx.race_no ?? '?'}${tx.race_name ? `: ${tx.race_name}` : ''}`);
+    }
+
+    if (tx.horse_name || tx.saddle_no) {
+        parts.push(`${tx.saddle_no ?? '?'}. ${tx.horse_name || 'Unknown runner'}`);
+    }
+
+    if (tx.type === 'bet_stake') {
+        const stakeWin = Number(tx.stake_win || 0);
+        const stakePlace = Number(tx.stake_place || 0);
+        const oddsWin = tx.odds_win ? Number(tx.odds_win).toFixed(2) : '-';
+        const oddsPlace = tx.odds_place ? Number(tx.odds_place).toFixed(2) : '-';
+        parts.push(`Win stake $${stakeWin.toFixed(2)} @ ${oddsWin}`);
+        parts.push(`Place stake $${stakePlace.toFixed(2)} @ ${oddsPlace}`);
+    }
+
+    if (tx.type === 'payout') {
+        const payoutWin = Number(tx.payout_win || 0);
+        const payoutPlace = Number(tx.payout_place || 0);
+        const returns = [];
+        if (payoutWin > 0) returns.push(`Win return $${payoutWin.toFixed(2)}`);
+        if (payoutPlace > 0) returns.push(`Place return $${payoutPlace.toFixed(2)}`);
+        if (returns.length) parts.push(returns.join(', '));
+    }
+
+    if (tx.description) parts.push(tx.description);
+    return parts.join(' | ');
+}
+
+function renderFundTransactionRows(history) {
+    const fundTransactions = (history || [])
+        .filter(tx => tx.type === 'deposit' || tx.type === 'withdrawal')
+        .slice()
+        .reverse()
+        .slice(0, 10);
+
+    if (fundTransactions.length === 0) {
+        return '<div class="empty-state">No deposits or withdrawals recorded yet</div>';
+    }
+
+    return `
+        <div class="fund-ledger">
+            ${fundTransactions.map(tx => `
+                <div class="fund-ledger-row">
+                    <div>
+                        <div class="runner-name">${escapeHtml(formatTransactionLabel(tx))}</div>
+                        <div class="runner-meta">${escapeHtml(new Date(tx.created_at).toLocaleString())}</div>
+                        ${tx.description ? `<div class="runner-meta">${escapeHtml(tx.description)}</div>` : ''}
+                    </div>
+                    <div class="${Number(tx.amount || 0) >= 0 ? 'text-success' : 'text-danger'}">
+                        ${Number(tx.amount || 0) >= 0 ? '+' : '-'}$${Math.abs(Number(tx.amount || 0)).toFixed(2)}
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
 function drawChart(history) {
     const container = document.getElementById('chart-container');
     if (!container || history.length === 0) return;
@@ -1570,12 +2137,28 @@ function drawChart(history) {
     const yScale = (v) => height - padding - ((v - min) / range) * (height - padding * 2);
     
     const points = history.map((h, i) => `${xScale(i)},${yScale(h.running_balance)}`).join(' ');
+    const labelEvery = history.length > 18 ? Math.ceil(history.length / 18) : 1;
     
     container.innerHTML = `
         <svg width="100%" height="100%" viewBox="0 0 ${width} ${height}">
             <line x1="${padding}" y1="${yScale(0)}" x2="${width-padding}" y2="${yScale(0)}" stroke="#e2e8f0" stroke-dasharray="4"/>
             <polyline fill="none" stroke="#2563eb" stroke-width="2" points="${points}"/>
-            ${history.map((h, i) => `<circle cx="${xScale(i)}" cy="${yScale(h.running_balance)}" r="3" fill="#2563eb"/>`).join('')}
+            ${history.map((h, i) => {
+                const x = xScale(i);
+                const y = yScale(h.running_balance);
+                const label = formatTransactionLabel(h);
+                const detail = `${new Date(h.created_at || h.date).toLocaleString()} | ${formatTransactionDetail(h)} | Balance $${Number(h.running_balance || 0).toFixed(2)}`;
+                const fill = Number(h.amount || 0) >= 0 ? '#16a34a' : '#dc2626';
+                const showLabel = i % labelEvery === 0 || h.type === 'deposit' || h.type === 'withdrawal' || h.type === 'payout';
+                return `
+                    <g>
+                        <circle cx="${x}" cy="${y}" r="4" fill="${fill}" stroke="#fff" stroke-width="1.5">
+                            <title>${escapeHtml(detail)}</title>
+                        </circle>
+                        ${showLabel ? `<text x="${x}" y="${Math.max(12, y - 8)}" font-size="10" fill="#334155" text-anchor="middle">${escapeHtml(label)}</text>` : ''}
+                    </g>
+                `;
+            }).join('')}
             <text x="${padding}" y="${height - 10}" font-size="12" fill="#64748b">${history[0]?.date || ''}</text>
             <text x="${width-padding}" y="${height - 10}" font-size="12" fill="#64748b" text-anchor="end">${history[history.length-1]?.date || ''}</text>
             <text x="10" y="${yScale(max)}" font-size="12" fill="#64748b">$${max.toFixed(0)}</text>

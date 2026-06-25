@@ -46,12 +46,12 @@ function calculateKellyStake(bankroll, probability, odds, kellyFraction = 0.25) 
  * Main stake calculation function
  * Returns recommended stakes for win and place bets
  */
-function calculateStakes(selection, bankroll = null) {
-    const settings_ = settings.getAll();
+function calculateStakes(selection, bankroll = null, userId = null) {
+    const settings_ = settings.getAll(userId);
     
     // Get current bankroll if not provided
     if (bankroll === null) {
-        bankroll = transactions.getBankroll();
+        bankroll = transactions.getBankroll(userId);
     }
     
     const stakingMode = settings_.staking_mode || 'flat';
@@ -147,11 +147,11 @@ function calculateStakes(selection, bankroll = null) {
 /**
  * Check risk controls before placing bet
  */
-function checkRiskControls(stakeAmount) {
-    const settings_ = settings.getAll();
-    const bankroll = transactions.getBankroll();
+function checkRiskControls(stakeAmount, userId = null) {
+    const settings_ = settings.getAll(userId);
+    const bankroll = transactions.getBankroll(userId);
     const today = new Date().toISOString().split('T')[0];
-    const dailyLoss = transactions.getDailyLoss(today);
+    const dailyLoss = transactions.getDailyLoss(today, userId);
     
     const maxStake = parseFloat(settings_.max_stake_per_race) || 100;
     const maxDailyLoss = parseFloat(settings_.max_daily_loss) || 200;

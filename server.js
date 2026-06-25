@@ -28,6 +28,14 @@ const { todayISO } = require('./src/utils/racingDate');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const BASE_PATH = (process.env.BASE_PATH || '/racemate').replace(/\/+$/, '');
+let databaseReady = null;
+
+function ensureDatabaseReady() {
+    if (!databaseReady) {
+        databaseReady = db.initSchema();
+    }
+    return databaseReady;
+}
 
 // Middleware
 app.use(express.json());
@@ -56,6 +64,7 @@ const upload = multer({
 function writeAuditLog(eventType, message, options = {}) {
     try {
         return db.auditLogs.create({
+            user_id: options.userId || null,
             event_type: eventType,
             message,
             entity_type: options.entityType || null,
@@ -67,6 +76,22 @@ function writeAuditLog(eventType, message, options = {}) {
         return null;
     }
 }
+
+function getRequestUserId(req) {
+    return req.user?.id || 1;
+}
+
+app.use('/api', async (req, res, next) => {
+    try {
+        await ensureDatabaseReady();
+        const requestedId = parseInt(req.get('X-Racemate-User-Id') || req.query.user_id, 10);
+        const user = Number.isInteger(requestedId) ? db.users.getById(requestedId) : null;
+        req.user = user || db.users.ensureDefault();
+        next();
+    } catch (err) {
+        next(err);
+    }
+});
 
 function parseAuditPayload(row) {
     if (!row.payload_json) return null;
@@ -175,10 +200,37 @@ app.post('/api/tracks/update', async (req, res) => {
 
 // ============ SETTINGS API ============
 
+// GET /api/users - List local app profiles
+app.get('/api/users', (req, res) => {
+    try {
+        res.json({
+            current_user: req.user,
+            users: db.users.getAll()
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/users - Create a local app profile
+app.post('/api/users', (req, res) => {
+    try {
+        const user = db.users.create(req.body?.name);
+        writeAuditLog('USER_CREATED', `Created user profile ${user.name}`, {
+            userId: user.id,
+            entityType: 'user',
+            entityId: user.id
+        });
+        res.status(201).json(user);
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
 // GET /api/settings - Get all settings
 app.get('/api/settings', (req, res) => {
     try {
-        const settings = db.settings.getAll();
+        const settings = db.settings.getAll(getRequestUserId(req));
         res.json(settings);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -188,9 +240,10 @@ app.get('/api/settings', (req, res) => {
 // POST /api/settings - Update settings
 app.post('/api/settings', (req, res) => {
     try {
-        const previous = db.settings.getAll();
-        db.settings.setMultiple(req.body);
-        const next = db.settings.getAll();
+        const userId = getRequestUserId(req);
+        const previous = db.settings.getAll(userId);
+        db.settings.setMultiple(req.body, userId);
+        const next = db.settings.getAll(userId);
         const changed = Object.keys(req.body || {}).reduce((acc, key) => {
             if (String(previous[key] ?? '') !== String(next[key] ?? '')) {
                 acc[key] = {
@@ -201,6 +254,7 @@ app.post('/api/settings', (req, res) => {
             return acc;
         }, {});
         writeAuditLog('SETTINGS_UPDATED', 'Application settings updated', {
+            userId,
             entityType: 'settings',
             payload: { changed }
         });
@@ -213,13 +267,15 @@ app.post('/api/settings', (req, res) => {
 // POST /api/settings/track - Save last selected track
 app.post('/api/settings/track', (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const { state, track, date } = req.body;
-        db.settings.set('last_state', state);
-        db.settings.set('last_track', track);
+        db.settings.set('last_state', state, userId);
+        db.settings.set('last_track', track, userId);
         if (date) {
-            db.settings.set('last_date', date);
+            db.settings.set('last_date', date, userId);
         }
         writeAuditLog('TRACK_SELECTION_SAVED', `Selected ${track || 'All tracks'} (${state || 'All states'})`, {
+            userId,
             entityType: 'settings',
             payload: { state, track, date: date || null }
         });
@@ -271,6 +327,7 @@ app.get('/api/meetings', (req, res) => {
 // GET /api/dashboard - Home dashboard races with optional date/state/track filters
 app.get('/api/dashboard', (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const { date, state, track } = req.query;
 
         const allMeetings = db.meetings.getAll();
@@ -285,8 +342,8 @@ app.get('/api/dashboard', (req, res) => {
 
         const meetingCards = meetings.map(meeting => {
             const races = db.races.getByMeeting(meeting.id).map(race => {
-                const pendingCount = db.bets.getPendingByRace(race.id).length;
-                const allRaceBets = db.bets.getByRace(race.id);
+                const pendingCount = db.bets.getPendingByRace(race.id, userId).length;
+                const allRaceBets = db.bets.getByRace(race.id, userId);
                 const betRunners = allRaceBets.reduce((acc, bet) => {
                     const key = `${bet.saddle_no || ''}-${bet.horse_name || ''}`;
                     if (!acc.some(item => item.key === key)) {
@@ -301,7 +358,7 @@ app.get('/api/dashboard', (req, res) => {
                 const settledBets = allRaceBets.filter(b => b.status !== 'pending');
                 const totalProfit = settledBets.reduce((sum, b) =>
                     sum + ((Number(b.payout_win || 0) + Number(b.payout_place || 0)) - (Number(b.stake_win || 0) + Number(b.stake_place || 0))), 0);
-                const resultRow = db.raceResults.getByRace(race.id);
+                const resultRow = db.raceResults.getByRace(race.id, userId);
 
                 let outcomeText = null;
                 if (resultRow) {
@@ -325,8 +382,14 @@ app.get('/api/dashboard', (req, res) => {
                     } : null,
                     outcome_text: outcomeText
                 };
-            });
+            }).sort((a, b) => Number(a.race_no || 0) - Number(b.race_no || 0));
             return { meeting, races };
+        }).sort((a, b) => {
+            const dateCompare = String(a.meeting.date || '').localeCompare(String(b.meeting.date || ''));
+            if (dateCompare !== 0) return dateCompare;
+            const trackCompare = String(a.meeting.track || '').localeCompare(String(b.meeting.track || ''));
+            if (trackCompare !== 0) return trackCompare;
+            return String(a.meeting.state || '').localeCompare(String(b.meeting.state || ''));
         });
 
         const raceCount = meetingCards.reduce((sum, item) => sum + item.races.length, 0);
@@ -338,7 +401,7 @@ app.get('/api/dashboard', (req, res) => {
         res.json({
             date: selectedDate,
             all_dates: !selectedDate,
-            available_dates: [...new Set(allMeetings.map(m => m.date).filter(Boolean))],
+            available_dates: [...new Set(allMeetings.map(m => m.date).filter(Boolean))].sort(),
             available_states: [...new Set(allMeetings.map(m => m.state).filter(Boolean))].sort(),
             available_tracks: [...new Set(allMeetings.map(m => m.track).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
             available_tracks_by_state: allMeetings.reduce((acc, meeting) => {
@@ -367,7 +430,52 @@ app.get('/api/racing/meetings/today', (req, res) => {
         const today = todayISO();
         const meetings = db.meetings.getImportedByDate(today);
         const lastImportedAt = db.settings.get('last_racing_import_at') || '';
-        res.json({ date: today, meetings, last_imported_at: lastImportedAt });
+        let raceCount = 0;
+        let runnerCount = 0;
+        for (const meeting of meetings) {
+            const races = db.races.getByMeeting(meeting.id);
+            raceCount += races.length;
+            for (const race of races) {
+                runnerCount += db.runners.getByRace(race.id).length;
+            }
+        }
+        res.json({
+            date: today,
+            meetings,
+            last_imported_at: lastImportedAt,
+            summary: {
+                meetings: meetings.length,
+                races: raceCount,
+                runners: runnerCount
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/horses - Search the permanent horse profile catalogue
+app.get('/api/horses', (req, res) => {
+    try {
+        const horses = db.horses.list(req.query.search || '', req.query.limit || 250);
+        res.json({
+            horses,
+            total: horses.length,
+            summary: db.horses.getSummary()
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/horses/:id - Horse identity and all retained race appearances
+app.get('/api/horses/:id(\\d+)', (req, res) => {
+    try {
+        const profile = db.horses.getProfile(parseInt(req.params.id, 10));
+        if (!profile) {
+            return res.status(404).json({ error: 'Horse profile not found' });
+        }
+        res.json(profile);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -432,6 +540,7 @@ app.post('/api/racing/import/odds', async (req, res) => {
 // POST /api/meeting/delete - Delete meeting and related races/runners/selections/bets
 app.post('/api/meeting/delete', (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const { date, state, track } = req.body;
 
         if (!date || !state || !track) {
@@ -443,14 +552,15 @@ app.post('/api/meeting/delete', (req, res) => {
             return res.status(404).json(result);
         }
 
-        const lastState = db.settings.get('last_state');
-        const lastTrack = db.settings.get('last_track');
-        const lastDate = db.settings.get('last_date');
+        const lastState = db.settings.get('last_state', userId);
+        const lastTrack = db.settings.get('last_track', userId);
+        const lastDate = db.settings.get('last_date', userId);
         if (lastState === state && lastTrack === track && lastDate === date) {
-            db.settings.set('last_track', '');
+            db.settings.set('last_track', '', userId);
         }
 
         writeAuditLog('MEETING_DELETED', `Deleted meeting ${track} (${state}) on ${date}`, {
+            userId,
             entityType: 'meeting',
             entityId: result.meeting_id || null,
             payload: {
@@ -493,7 +603,7 @@ app.post('/api/races/:id/analyze', async (req, res) => {
             return res.status(404).json({ error: 'Race not found' });
         }
         
-        const result = await selector.selectForRace(raceId, race);
+        const result = await selector.selectForRace(raceId, race, getRequestUserId(req));
         res.json(result);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -708,8 +818,9 @@ app.put('/api/runners/:id/scratch', (req, res) => {
 // GET /api/selections/:raceId - Get selections for a race
 app.get('/api/selections/:raceId', (req, res) => {
     try {
-        const selections = db.selections.getByRace(parseInt(req.params.raceId));
-        const recommendation = db.selections.getRecommendation(parseInt(req.params.raceId));
+        const userId = getRequestUserId(req);
+        const selections = db.selections.getByRace(parseInt(req.params.raceId), userId);
+        const recommendation = db.selections.getRecommendation(parseInt(req.params.raceId), userId);
         res.json({ selections, recommendation });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -721,8 +832,9 @@ app.get('/api/selections/:raceId', (req, res) => {
 // GET /api/bets - Get all bets
 app.get('/api/bets', (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const { status } = req.query;
-        const bets = status === 'pending' ? db.bets.getPending() : db.bets.getAll();
+        const bets = status === 'pending' ? db.bets.getPending(userId) : db.bets.getAll(100, userId);
         res.json(bets);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -734,7 +846,7 @@ app.get('/api/logs', (req, res) => {
     try {
         const limit = Math.min(parseInt(req.query.limit, 10) || 500, 2000);
         const eventType = req.query.type || null;
-        const logs = db.auditLogs.getAll(limit, eventType).map(row => ({
+        const logs = db.auditLogs.getAll(limit, eventType, getRequestUserId(req)).map(row => ({
             ...row,
             payload_json: parseAuditPayload(row)
         }));
@@ -747,13 +859,14 @@ app.get('/api/logs', (req, res) => {
 // GET /api/activity - Unified audit and transaction activity feed
 app.get('/api/activity', (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const limit = Math.min(parseInt(req.query.limit, 10) || 500, 2000);
-        const auditEvents = db.auditLogs.getAll(limit).map(row => ({
+        const auditEvents = db.auditLogs.getAll(limit, null, userId).map(row => ({
             ...row,
             activity_type: 'audit',
             payload_json: parseAuditPayload(row)
         }));
-        const transactionEvents = db.transactions.getAll(limit).map(activityFromTransaction);
+        const transactionEvents = db.transactions.getAll(limit, userId).map(activityFromTransaction);
         const activity = [...auditEvents, ...transactionEvents]
             .sort((a, b) => {
                 const timeDiff = new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
@@ -771,14 +884,16 @@ app.get('/api/activity', (req, res) => {
 // POST /api/bets - Place a new bet
 app.post('/api/bets', (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const { selection_id, stake_win, stake_place, odds_win, odds_place } = req.body;
         
         // Check risk controls
         const totalStake = (stake_win || 0) + (stake_place || 0);
-        const riskCheck = staking.checkRiskControls(totalStake);
+        const riskCheck = staking.checkRiskControls(totalStake, userId);
         
         if (!riskCheck.canBet) {
             writeAuditLog('BET_BLOCKED', 'Risk controls blocked a bet', {
+                userId,
                 entityType: 'bet',
                 payload: {
                     selection_id,
@@ -798,6 +913,7 @@ app.post('/api/bets', (req, res) => {
         
         // Create bet
         const bet = db.bets.create({
+            user_id: userId,
             selection_id,
             stake_win: stake_win || 0,
             stake_place: stake_place || 0,
@@ -806,10 +922,11 @@ app.post('/api/bets', (req, res) => {
         });
         
         // Record stake transaction
-        bankroll.recordBetStake(bet.id, totalStake);
+        bankroll.recordBetStake(bet.id, totalStake, userId);
 
-        const detailed = db.bets.getDetailedById(bet.id);
+        const detailed = db.bets.getDetailedById(bet.id, userId);
         writeAuditLog('BET_PLACED', `Bet placed on ${detailed?.track || 'Unknown'} R${detailed?.race_no || '?'} ${detailed?.horse_name || ''}`.trim(), {
+            userId,
             entityType: 'bet',
             entityId: bet.id,
             payload: {
@@ -833,7 +950,7 @@ app.post('/api/bets', (req, res) => {
         res.json({ 
             success: true, 
             bet, 
-            bankroll: bankroll.getBankroll(),
+            bankroll: bankroll.getBankroll(userId),
             warnings: riskCheck.issues.filter(i => i.severity === 'warning')
         });
     } catch (err) {
@@ -844,12 +961,13 @@ app.post('/api/bets', (req, res) => {
 // POST /api/bets/:id/calculate-stake - Calculate recommended stakes
 app.post('/api/bets/:id/calculate-stake', (req, res) => {
     try {
-        const selection = db.selections.getById(parseInt(req.params.id));
+        const userId = getRequestUserId(req);
+        const selection = db.selections.getById(parseInt(req.params.id), userId);
         if (!selection) {
             return res.status(404).json({ error: 'Selection not found' });
         }
         
-        const stakes = staking.calculateStakes(selection);
+        const stakes = staking.calculateStakes(selection, null, userId);
         const payouts = staking.calculatePayouts(
             stakes.stake_win, 
             stakes.stake_place, 
@@ -868,15 +986,17 @@ app.post('/api/bets/:id/calculate-stake', (req, res) => {
 // POST /api/results/:betId - Settle a bet
 app.post('/api/results/:betId(\\d+)', (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const { result, position } = req.body;
         
         if (!['won', 'placed', 'lost', 'void'].includes(result)) {
             return res.status(400).json({ error: 'Invalid result. Must be won, placed, lost, or void' });
         }
         
-        const settlement = bankroll.settleBet(parseInt(req.params.betId), result, position);
-        const detailed = db.bets.getDetailedById(parseInt(req.params.betId));
+        const settlement = bankroll.settleBet(parseInt(req.params.betId), result, position, userId);
+        const detailed = db.bets.getDetailedById(parseInt(req.params.betId), userId);
         writeAuditLog('BET_SETTLED', `Bet settled as ${result.toUpperCase()} for ${detailed?.track || 'Unknown'} R${detailed?.race_no || '?'} ${detailed?.horse_name || ''}`.trim(), {
+            userId,
             entityType: 'bet',
             entityId: parseInt(req.params.betId),
             payload: {
@@ -905,6 +1025,7 @@ app.post('/api/results/:betId(\\d+)', (req, res) => {
 // POST /api/results/race - Settle all pending bets for a race using top-three saddle numbers
 app.post('/api/results/race', (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const { race_id, first, second, third } = req.body;
 
         if (!race_id) {
@@ -928,10 +1049,11 @@ app.post('/api/results/race', (req, res) => {
             parseInt(race_id),
             finishOrder[0] || null,
             finishOrder[1] || null,
-            finishOrder[2] || null
+            finishOrder[2] || null,
+            userId
         );
 
-        const pendingBets = db.bets.getPendingByRace(parseInt(race_id));
+        const pendingBets = db.bets.getPendingByRace(parseInt(race_id), userId);
 
         const settled = [];
         for (const bet of pendingBets) {
@@ -949,7 +1071,7 @@ app.post('/api/results/race', (req, res) => {
                 position = 3;
             }
 
-            const settlement = bankroll.settleBet(bet.id, result, position);
+            const settlement = bankroll.settleBet(bet.id, result, position, userId);
             settled.push({
                 bet_id: bet.id,
                 horse_name: bet.horse_name,
@@ -960,7 +1082,7 @@ app.post('/api/results/race', (req, res) => {
             });
         }
 
-        const allRaceBets = db.bets.getByRace(parseInt(race_id));
+        const allRaceBets = db.bets.getByRace(parseInt(race_id), userId);
         const settledBets = allRaceBets.filter(b => b.status !== 'pending');
         const totalProfit = settledBets.reduce((sum, b) =>
             sum + ((Number(b.payout_win || 0) + Number(b.payout_place || 0)) - (Number(b.stake_win || 0) + Number(b.stake_place || 0))), 0);
@@ -976,6 +1098,7 @@ app.post('/api/results/race', (req, res) => {
 
         const meeting = db.meetings.getById(race.meeting_id);
         writeAuditLog('RACE_RESULTS_ENTERED', `Results entered for ${meeting?.track || 'Unknown'} R${race.race_no} (${finishOrder.join('-')})`, {
+            userId,
             entityType: 'race',
             entityId: race.id,
             payload: {
@@ -999,7 +1122,7 @@ app.post('/api/results/race', (req, res) => {
         res.json({
             success: true,
             settled,
-            bankroll: bankroll.getBankroll(),
+            bankroll: bankroll.getBankroll(userId),
             placings: {
                 first: storedResult?.first_saddle || null,
                 second: storedResult?.second_saddle || null,
@@ -1042,7 +1165,7 @@ function raceDataDate(raceId) {
 // GET /api/bankroll - Get current bankroll
 app.get('/api/bankroll', (req, res) => {
     try {
-        res.json({ bankroll: bankroll.getBankroll() });
+        res.json({ bankroll: bankroll.getBankroll(getRequestUserId(req)) });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1051,7 +1174,7 @@ app.get('/api/bankroll', (req, res) => {
 // GET /api/bankroll/summary - Get full summary
 app.get('/api/bankroll/summary', (req, res) => {
     try {
-        res.json(bankroll.getSummary());
+        res.json(bankroll.getSummary(getRequestUserId(req), req.query.period || 'all_time'));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1060,14 +1183,16 @@ app.get('/api/bankroll/summary', (req, res) => {
 // POST /api/bankroll/initial - Set initial bankroll
 app.post('/api/bankroll/initial', (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const { amount } = req.body;
         if (!amount || amount <= 0) {
             return res.status(400).json({ error: 'Amount must be positive' });
         }
-        const previousBankroll = bankroll.getBankroll();
-        const newBankroll = bankroll.setInitialBankroll(amount);
-        const transaction = db.transactions.getAll(1)[0] || null;
+        const previousBankroll = bankroll.getBankroll(userId);
+        const newBankroll = bankroll.setInitialBankroll(amount, userId);
+        const transaction = db.transactions.getAll(1, userId)[0] || null;
         writeAuditLog('BANKROLL_INITIAL_SET', `Initial bankroll set to $${Number(amount).toFixed(2)}`, {
+            userId,
             entityType: 'bankroll',
             entityId: transaction?.id || null,
             payload: {
@@ -1086,11 +1211,13 @@ app.post('/api/bankroll/initial', (req, res) => {
 // POST /api/bankroll/deposit - Deposit funds
 app.post('/api/bankroll/deposit', (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const { amount, description } = req.body;
-        const previousBankroll = bankroll.getBankroll();
-        const transaction = bankroll.deposit(amount, description);
-        const newBankroll = bankroll.getBankroll();
+        const previousBankroll = bankroll.getBankroll(userId);
+        const transaction = bankroll.deposit(amount, description, userId);
+        const newBankroll = bankroll.getBankroll(userId);
         writeAuditLog('BANKROLL_DEPOSIT', `Deposited $${Number(amount).toFixed(2)}`, {
+            userId,
             entityType: 'transaction',
             entityId: transaction?.id || null,
             payload: {
@@ -1110,11 +1237,13 @@ app.post('/api/bankroll/deposit', (req, res) => {
 // POST /api/bankroll/withdraw - Withdraw funds
 app.post('/api/bankroll/withdraw', (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const { amount, description } = req.body;
-        const previousBankroll = bankroll.getBankroll();
-        const transaction = bankroll.withdraw(amount, description);
-        const newBankroll = bankroll.getBankroll();
+        const previousBankroll = bankroll.getBankroll(userId);
+        const transaction = bankroll.withdraw(amount, description, userId);
+        const newBankroll = bankroll.getBankroll(userId);
         writeAuditLog('BANKROLL_WITHDRAWAL', `Withdrew $${Number(amount).toFixed(2)}`, {
+            userId,
             entityType: 'transaction',
             entityId: transaction?.id || null,
             payload: {
@@ -1137,7 +1266,7 @@ app.post('/api/bankroll/withdraw', (req, res) => {
 app.get('/api/stats', (req, res) => {
     try {
         const { start_date, end_date, state, track } = req.query;
-        const stats = bankroll.getFilteredStats(start_date, end_date, state, track);
+        const stats = bankroll.getFilteredStats(start_date, end_date, state, track, getRequestUserId(req));
         res.json(stats);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1147,8 +1276,11 @@ app.get('/api/stats', (req, res) => {
 // GET /api/stats/history - Get bankroll history
 app.get('/api/stats/history', (req, res) => {
     try {
-        const days = parseInt(req.query.days) || 30;
-        const history = bankroll.getHistory(days);
+        const periodRange = req.query.period ? bankroll.getPeriodRange(req.query.period) : null;
+        const days = periodRange
+            ? (periodRange.startDate ? Math.max(1, Math.ceil((new Date(periodRange.endDate) - new Date(periodRange.startDate)) / 86400000) + 1) : 3650)
+            : (parseInt(req.query.days) || 30);
+        const history = bankroll.getHistory(days, getRequestUserId(req));
         res.json(history);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1161,7 +1293,7 @@ app.get('/api/stats/history', (req, res) => {
 app.get('/api/transactions', (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 100;
-        res.json(db.transactions.getAll(limit));
+        res.json(db.transactions.getAll(limit, getRequestUserId(req)));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1226,6 +1358,7 @@ app.post('/api/import/json', (req, res) => {
 // POST /api/import/paste - Import form guide from pasted markdown/text
 app.post('/api/import/paste', async (req, res) => {
     try {
+        const userId = getRequestUserId(req);
         const { text } = req.body;
 
         if (!text || !String(text).trim()) {
@@ -1242,13 +1375,14 @@ app.post('/api/import/paste', async (req, res) => {
 
             const meeting = db.meetings.getByDateTrack(parsed.meeting.date, parsed.meeting.state, parsed.meeting.track);
             const race = meeting ? db.races.getByMeetingAndNumber(meeting.id, parseInt(parsed.race.race_no, 10)) : null;
-            const analysis = race ? await selector.selectForRace(race.id, race) : null;
+            const analysis = race ? await selector.selectForRace(race.id, race, userId) : null;
 
-            db.settings.set('last_state', parsed.meeting.state);
-            db.settings.set('last_track', parsed.meeting.track);
-            db.settings.set('last_date', parsed.meeting.date);
+            db.settings.set('last_state', parsed.meeting.state, userId);
+            db.settings.set('last_track', parsed.meeting.track, userId);
+            db.settings.set('last_date', parsed.meeting.date, userId);
 
             writeAuditLog('PASTE_FORM_IMPORTED', `Pasted form guide imported for ${parsed.meeting.track} R${parsed.race.race_no}`, {
+                userId,
                 entityType: 'race',
                 entityId: race?.id || null,
                 payload: importAuditPayload('paste_import', imported, {
@@ -1332,14 +1466,15 @@ app.post('/api/import/paste', async (req, res) => {
                 .slice(0, 3)
                 .map(item => item.saddle_no);
 
-            const settlement = awaitRaceSettlement(race.id, resultOrder);
-            const analysis = await selector.selectForRace(race.id, race);
+            const settlement = awaitRaceSettlement(race.id, resultOrder, userId);
+            const analysis = await selector.selectForRace(race.id, race, userId);
 
-            db.settings.set('last_state', meetingState);
-            db.settings.set('last_track', meetingTrack);
-            db.settings.set('last_date', meetingDate);
+            db.settings.set('last_state', meetingState, userId);
+            db.settings.set('last_track', meetingTrack, userId);
+            db.settings.set('last_date', meetingDate, userId);
 
             writeAuditLog('PASTE_RESULTS_IMPORTED', `Pasted results imported for ${meetingTrack} R${race.race_no}`, {
+                userId,
                 entityType: 'race',
                 entityId: race.id,
                 payload: {
@@ -1386,11 +1521,12 @@ app.post('/api/import/paste', async (req, res) => {
 
         const imported = importFormGuideData(parsed.records, 'paste_import');
 
-        db.settings.set('last_state', parsed.meeting.state);
-        db.settings.set('last_track', parsed.meeting.track);
-        db.settings.set('last_date', parsed.meeting.date);
+        db.settings.set('last_state', parsed.meeting.state, userId);
+        db.settings.set('last_track', parsed.meeting.track, userId);
+        db.settings.set('last_date', parsed.meeting.date, userId);
 
         writeAuditLog('PASTE_FORM_IMPORTED', `Pasted form guide imported for ${parsed.meeting.track}`, {
+            userId,
             entityType: 'import',
             payload: importAuditPayload('paste_import', imported, {
                 text_length: String(text).length,
@@ -1408,6 +1544,7 @@ app.post('/api/import/paste', async (req, res) => {
         });
     } catch (err) {
         writeAuditLog('PASTE_IMPORT_FAILED', 'Pasted import failed', {
+            userId: getRequestUserId(req),
             entityType: 'import',
             payload: {
                 text_length: String(req.body?.text || '').length,
@@ -1418,14 +1555,14 @@ app.post('/api/import/paste', async (req, res) => {
     }
 });
 
-function awaitRaceSettlement(raceId, resultOrder) {
-    const pendingBets = db.bets.getPendingByRace(raceId);
+function awaitRaceSettlement(raceId, resultOrder, userId) {
+    const pendingBets = db.bets.getPendingByRace(raceId, userId);
     if (pendingBets.length === 0) {
         return {
             success: true,
             message: 'No pending bets found for this race',
             settled: [],
-            bankroll: bankroll.getBankroll()
+            bankroll: bankroll.getBankroll(userId)
         };
     }
 
@@ -1445,7 +1582,7 @@ function awaitRaceSettlement(raceId, resultOrder) {
             position = 3;
         }
 
-        const settlement = bankroll.settleBet(bet.id, result, position);
+        const settlement = bankroll.settleBet(bet.id, result, position, userId);
         settled.push({
             bet_id: bet.id,
             horse_name: bet.horse_name,
@@ -1459,7 +1596,7 @@ function awaitRaceSettlement(raceId, resultOrder) {
     return {
         success: true,
         settled,
-        bankroll: bankroll.getBankroll()
+        bankroll: bankroll.getBankroll(userId)
     };
 }
 
@@ -1583,16 +1720,20 @@ function importFormGuideData(records, source = 'manual_import') {
 // GET /api/export/transactions - Export transactions as CSV
 app.get('/api/export/transactions', (req, res) => {
     try {
-        const csv = bankroll.exportTransactionsCSV();
+        const userId = getRequestUserId(req);
+        const period = req.query.period || 'all_time';
+        const csv = bankroll.exportTransactionsCSV(userId, period);
         writeAuditLog('EXPORT_DOWNLOADED', 'Transactions CSV exported', {
+            userId,
             entityType: 'export',
             payload: {
                 export_type: 'transactions_csv',
-                transaction_count: db.transactions.getAll(10000).length
+                period,
+                transaction_count: db.transactions.getAll(10000, userId).length
             }
         });
         res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', 'attachment; filename=transactions.csv');
+        res.setHeader('Content-Disposition', `attachment; filename=transactions-${period}.csv`);
         res.send(csv);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1602,16 +1743,20 @@ app.get('/api/export/transactions', (req, res) => {
 // GET /api/export/bets - Export bets as CSV
 app.get('/api/export/bets', (req, res) => {
     try {
-        const csv = bankroll.exportBetsCSV();
+        const userId = getRequestUserId(req);
+        const period = req.query.period || 'all_time';
+        const csv = bankroll.exportBetsCSV(userId, period);
         writeAuditLog('EXPORT_DOWNLOADED', 'Bets CSV exported', {
+            userId,
             entityType: 'export',
             payload: {
                 export_type: 'bets_csv',
-                bet_count: db.bets.getAll(10000).length
+                period,
+                bet_count: db.bets.getAll(10000, userId).length
             }
         });
         res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', 'attachment; filename=bets.csv');
+        res.setHeader('Content-Disposition', `attachment; filename=bets-${period}.csv`);
         res.send(csv);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1710,7 +1855,7 @@ app.get('*', (req, res) => {
 
 // Start server with async init
 async function startServer() {
-    await db.initSchema();
+    await ensureDatabaseReady();
     startRacingImportCron({
         enabled: process.env.ENABLE_RACING_CRON,
         importTime: process.env.RACING_IMPORT_TIME

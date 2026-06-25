@@ -5,6 +5,25 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Local app profiles. This is profile switching, not password-based authentication.
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Per-user settings override global defaults from settings.
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, key),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- Meetings table
 CREATE TABLE IF NOT EXISTS meetings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,10 +61,25 @@ CREATE TABLE IF NOT EXISTS races (
     UNIQUE(meeting_id, race_no)
 );
 
+-- Permanent horse identities shared by race appearances.
+CREATE TABLE IF NOT EXISTS horses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    normalized_name TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    country TEXT DEFAULT 'AUS',
+    latest_trainer TEXT,
+    latest_rating REAL,
+    first_seen_date TEXT,
+    last_seen_date TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Runners table
 CREATE TABLE IF NOT EXISTS runners (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     race_id INTEGER NOT NULL,
+    horse_id INTEGER,
     saddle_no INTEGER NOT NULL,
     source TEXT DEFAULT 'manual',
     source_runner_id TEXT,
@@ -78,6 +112,7 @@ CREATE TABLE IF NOT EXISTS runners (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE,
+    FOREIGN KEY (horse_id) REFERENCES horses(id) ON DELETE SET NULL,
     UNIQUE(race_id, saddle_no)
 );
 
@@ -125,6 +160,7 @@ CREATE TABLE IF NOT EXISTS tips (
 -- Selections table (model predictions)
 CREATE TABLE IF NOT EXISTS selections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL DEFAULT 1,
     race_id INTEGER NOT NULL,
     runner_id INTEGER NOT NULL,
     model_version TEXT DEFAULT 'v1',
@@ -138,6 +174,7 @@ CREATE TABLE IF NOT EXISTS selections (
     recommendation_status TEXT CHECK(recommendation_status IN ('bet', 'skip', 'no_data')),
     explanation_json TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE,
     FOREIGN KEY (runner_id) REFERENCES runners(id) ON DELETE CASCADE
 );
@@ -145,6 +182,7 @@ CREATE TABLE IF NOT EXISTS selections (
 -- Bets table
 CREATE TABLE IF NOT EXISTS bets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL DEFAULT 1,
     selection_id INTEGER NOT NULL,
     stake_win REAL DEFAULT 0,
     stake_place REAL DEFAULT 0,
@@ -156,39 +194,47 @@ CREATE TABLE IF NOT EXISTS bets (
     payout_win REAL DEFAULT 0,
     payout_place REAL DEFAULT 0,
     settled_at DATETIME,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (selection_id) REFERENCES selections(id) ON DELETE CASCADE
 );
 
 -- Race results table (entered placings by race)
 CREATE TABLE IF NOT EXISTS race_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    race_id INTEGER NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL DEFAULT 1,
+    race_id INTEGER NOT NULL,
     first_saddle INTEGER,
     second_saddle INTEGER,
     third_saddle INTEGER,
     settled_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (race_id) REFERENCES races(id) ON DELETE CASCADE,
+    UNIQUE(user_id, race_id)
 );
 
 -- Audit log table (append-only activity history)
 CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
     event_type TEXT NOT NULL,
     message TEXT NOT NULL,
     entity_type TEXT,
     entity_id INTEGER,
     payload_json TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
 -- Transactions ledger
 CREATE TABLE IF NOT EXISTS transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL DEFAULT 1,
     type TEXT NOT NULL CHECK(type IN ('deposit', 'withdrawal', 'bet_stake', 'payout', 'adjustment')),
     amount REAL NOT NULL,
     bet_id INTEGER,
     description TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (bet_id) REFERENCES bets(id) ON DELETE SET NULL
 );
 
@@ -198,20 +244,30 @@ CREATE INDEX IF NOT EXISTS idx_meetings_state_track ON meetings(state, track);
 CREATE INDEX IF NOT EXISTS idx_meetings_source ON meetings(source, source_meeting_id);
 CREATE INDEX IF NOT EXISTS idx_races_meeting ON races(meeting_id);
 CREATE INDEX IF NOT EXISTS idx_races_source ON races(source, source_race_id);
+CREATE INDEX IF NOT EXISTS idx_horses_name ON horses(normalized_name);
+CREATE INDEX IF NOT EXISTS idx_horses_last_seen ON horses(last_seen_date);
 CREATE INDEX IF NOT EXISTS idx_runners_race ON runners(race_id);
 CREATE INDEX IF NOT EXISTS idx_runners_source ON runners(source, source_runner_id);
 CREATE INDEX IF NOT EXISTS idx_odds_snapshots_runner ON odds_snapshots(runner_id);
 CREATE INDEX IF NOT EXISTS idx_odds_snapshots_recorded ON odds_snapshots(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_results_race ON results(race_id);
 CREATE INDEX IF NOT EXISTS idx_tips_race ON tips(race_id);
+CREATE INDEX IF NOT EXISTS idx_user_settings_user ON user_settings(user_id);
 CREATE INDEX IF NOT EXISTS idx_selections_race ON selections(race_id);
+CREATE INDEX IF NOT EXISTS idx_selections_user_race ON selections(user_id, race_id);
 CREATE INDEX IF NOT EXISTS idx_bets_selection ON bets(selection_id);
+CREATE INDEX IF NOT EXISTS idx_bets_user_status ON bets(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_bets_status ON bets(status);
 CREATE INDEX IF NOT EXISTS idx_race_results_race ON race_results(race_id);
+CREATE INDEX IF NOT EXISTS idx_race_results_user_race ON race_results(user_id, race_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_event ON audit_logs(event_type);
 CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type);
+CREATE INDEX IF NOT EXISTS idx_transactions_user_created ON transactions(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(created_at);
+
+INSERT OR IGNORE INTO users (id, name, is_active) VALUES (1, 'Default User', 1);
 
 -- Insert default settings
 INSERT OR IGNORE INTO settings (key, value) VALUES 

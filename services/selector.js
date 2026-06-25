@@ -313,7 +313,7 @@ function getFactorDescription(factor, score) {
 /**
  * Main selection function for a race
  */
-async function selectForRace(raceId, raceData) {
+async function selectForRace(raceId, raceData, userId = null) {
     const runnersData = runnersDb.getByRace(raceId)
         .filter(r => !r.scratched);
     
@@ -358,7 +358,7 @@ async function selectForRace(raceId, raceData) {
     scoredRunners.sort((a, b) => b.score - a.score);
     
     // Get settings for threshold checks
-    const settings_ = settings.getAll();
+    const settings_ = settings.getAll(userId);
     
     // Find top runner that meets thresholds
     let recommendation = null;
@@ -392,13 +392,14 @@ async function selectForRace(raceId, raceData) {
     }
     
     // Store selections in DB
-    selectionsDb.deleteByRace(raceId);
+    selectionsDb.deleteByRace(raceId, userId);
     
     for (const runner of scoredRunners) {
         const thresholdResult = meetsThresholds(runner, settings_);
         const isRecommended = recommendation?.runner_id === runner.id;
         
         selectionsDb.create({
+            user_id: userId,
             race_id: raceId,
             runner_id: runner.id,
             model_version: 'v1',

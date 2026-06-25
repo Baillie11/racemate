@@ -59,6 +59,41 @@ body {
     cursor: pointer;
 }
 
+.nav-user {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.nav-user-select {
+    min-width: 130px;
+    max-width: 190px;
+    height: 36px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text);
+    padding: 0 8px;
+    font-size: 0.9rem;
+}
+
+.nav-user-add {
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+}
+
+.nav-user-add:hover {
+    background: var(--primary);
+    color: white;
+}
+
 .nav-bankroll {
     background: var(--success);
     color: white;
@@ -161,6 +196,187 @@ body {
     font-weight: 600;
     color: var(--text-muted);
     letter-spacing: 0.01em;
+}
+
+.page-title,
+.horse-profile-title h1 {
+    font-size: 1.5rem;
+    line-height: 1.2;
+    margin: 0 0 4px;
+}
+
+.horse-page-toolbar,
+.horse-import-toolbar,
+.horse-profile-title,
+.horse-history-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+}
+
+.horse-search {
+    display: grid;
+    grid-template-columns: minmax(220px, 320px) auto;
+    gap: 8px;
+}
+
+.horse-profile-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 2fr) 24px;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 8px;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+}
+
+.horse-profile-row:last-child {
+    border-bottom: 0;
+}
+
+.horse-profile-row:hover,
+.horse-profile-row:focus-visible {
+    background: var(--bg);
+}
+
+.horse-profile-row:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
+}
+
+.horse-profile-name {
+    font-weight: 700;
+}
+
+.horse-profile-meta {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.horse-profile-arrow {
+    color: var(--text-muted);
+    font-size: 1.5rem;
+    text-align: right;
+}
+
+.horse-history-row {
+    align-items: flex-start;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.horse-history-row:last-child {
+    border-bottom: 0;
+}
+
+.horse-history-main {
+    min-width: 0;
+}
+
+.horse-history-result {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 4px 9px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.status-badge.won,
+.status-badge.placed {
+    background: #bbf7d0;
+    color: #14532d;
+}
+
+.status-badge.pending {
+    background: #f3f4f6;
+    color: #4b5563;
+}
+
+@media (max-width: 767px) {
+    .horse-page-toolbar,
+    .horse-import-toolbar,
+    .horse-history-row {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .horse-search {
+        width: 100%;
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .horse-profile-row {
+        grid-template-columns: minmax(0, 1fr) 20px;
+        gap: 4px 10px;
+    }
+
+    .horse-profile-meta {
+        grid-column: 1;
+    }
+
+    .horse-profile-arrow {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+    }
+
+    .horse-history-result {
+        justify-content: space-between;
+    }
+}
+
+.pending-track-group {
+    margin-top: 16px;
+}
+
+.pending-track-group:first-of-type {
+    margin-top: 0;
+}
+
+.pending-race-group {
+    margin-top: 10px;
+}
+
+.pending-race-title {
+    font-weight: 600;
+    color: var(--text);
+    padding: 8px 12px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+}
+
+.fund-ledger {
+    border-top: 1px solid var(--border);
+}
+
+.fund-ledger-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.fund-ledger-row:last-child {
+    border-bottom: none;
+}
+
+.bankroll-period-select {
+    max-width: 220px;
 }
 
 /* ============ Forms ============ */
@@ -342,11 +558,59 @@ body {
 }
 
 .stat-card {
+    position: relative;
     background: var(--bg-card);
     border-radius: var(--radius);
     padding: 16px;
     text-align: center;
     box-shadow: var(--shadow);
+    outline: none;
+}
+
+.stat-card:focus-visible {
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25), var(--shadow);
+}
+
+.stat-card[data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 10px);
+    width: min(280px, calc(100vw - 32px));
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    background: #172033;
+    color: #ffffff;
+    font-size: 0.78rem;
+    font-weight: 400;
+    line-height: 1.4;
+    text-align: left;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.24);
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, 4px);
+    transition: opacity 0.15s ease, transform 0.15s ease;
+    z-index: 20;
+}
+
+.stat-card[data-tooltip]:hover::after,
+.stat-card[data-tooltip]:focus::after {
+    opacity: 1;
+    transform: translate(-50%, 0);
+}
+
+.stat-info {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    font-weight: 700;
+    line-height: 16px;
 }
 
 .stat-value {
@@ -360,6 +624,20 @@ body {
 }
 
 .stat-value.negative {
+    color: var(--danger);
+}
+
+.stat-secondary {
+    margin-top: 2px;
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.stat-secondary.positive {
+    color: var(--success);
+}
+
+.stat-secondary.negative {
     color: var(--danger);
 }
 
@@ -700,6 +978,75 @@ body {
     display: flex;
     gap: 8px;
     justify-content: flex-end;
+}
+
+.settlement-outcome {
+    border: 1px solid var(--border);
+    border-left-width: 5px;
+    border-radius: var(--radius);
+    padding: 16px;
+    text-align: center;
+}
+
+.settlement-outcome-win {
+    background: #dcfce7;
+    border-color: #22c55e;
+    color: #14532d;
+}
+
+.settlement-outcome-loss {
+    background: #fee2e2;
+    border-color: #ef4444;
+    color: #7f1d1d;
+}
+
+.settlement-outcome-neutral {
+    background: #f1f5f9;
+    border-color: #94a3b8;
+    color: #334155;
+}
+
+.settlement-outcome-label {
+    font-size: 0.875rem;
+    font-weight: 700;
+}
+
+.settlement-outcome-amount {
+    margin-top: 4px;
+    font-size: 1.5rem;
+    font-weight: 700;
+}
+
+.settlement-outcome-details {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid currentColor;
+}
+
+.settlement-outcome-detail {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 6px;
+    text-align: left;
+}
+
+.bet-success-summary {
+    border-left: 5px solid #22c55e;
+    border-radius: var(--radius);
+    background: #dcfce7;
+    color: #14532d;
+    padding: 16px;
+}
+
+.bet-success-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+}
+
+.bet-success-stake {
+    margin-top: 8px;
+    font-weight: 700;
 }
 
 /* ============ File Upload ============ */

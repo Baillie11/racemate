@@ -39,7 +39,7 @@ function inferStateFromTrack(track, tracksByState = {}) {
     // Fallback hints for common tracks when source list is incomplete.
     const hints = [
         { state: 'TAS', pattern: /hobart|launceston|devonport|elwick/i },
-        { state: 'WA', pattern: /ascot|belmont|pinjarra|kalgoorlie|bunbury|narrogin|broome/i },
+        { state: 'WA', pattern: /ascot|belmont|pinjarra|kalgoorlie|bunbury|narrogin|broome|northam/i },
         { state: 'SA', pattern: /morphettville|gawler|balaklava|strathalbyn|mt gambier|mount gambier/i },
         { state: 'NT', pattern: /darwin|fannie bay|alice springs/i },
         { state: 'ACT', pattern: /canberra/i }
@@ -202,6 +202,50 @@ function parseMeetingMeta(text, tracksByState) {
     };
 }
 
+function normalizeStartTime(value) {
+    const match = String(value || '').trim().match(/^(\d{1,2}):([0-5]\d)$/);
+    if (!match) return null;
+
+    const hour = parseInt(match[1], 10);
+    if (hour < 0 || hour > 23) return null;
+
+    return `${String(hour).padStart(2, '0')}:${match[2]}`;
+}
+
+function parseRaceStartTime(text, raceNo) {
+    const lines = String(text || '')
+        .split('\n')
+        .map(line => line.trim());
+    const raceHeaderPattern = new RegExp(`^(?:##\\s*)?R\\s*${raceNo}\\b`, 'i');
+    const raceHeaderIndex = lines.findIndex(line => raceHeaderPattern.test(line));
+
+    if (raceHeaderIndex >= 0) {
+        for (const line of lines.slice(raceHeaderIndex + 1, raceHeaderIndex + 14)) {
+            const explicitTime = normalizeStartTime(line);
+            if (explicitTime) return explicitTime;
+            if (/^(?:Tips & Race Analysis|Field|Form)$/i.test(line)) break;
+        }
+    }
+
+    // Some copied meeting headers use three lines: "R", race number, then time.
+    for (let i = 0; i < lines.length - 2; i++) {
+        if (/^R$/i.test(lines[i]) && parseInt(lines[i + 1], 10) === raceNo) {
+            const explicitTime = normalizeStartTime(lines[i + 2]);
+            if (explicitTime) return explicitTime;
+        }
+    }
+
+    // Other sources keep the race number and time on one line.
+    const inlinePattern = new RegExp(`^R\\s*${raceNo}\\s+(\\d{1,2}:[0-5]\\d)$`, 'i');
+    for (const line of lines) {
+        const inlineMatch = line.match(inlinePattern);
+        const explicitTime = inlineMatch ? normalizeStartTime(inlineMatch[1]) : null;
+        if (explicitTime) return explicitTime;
+    }
+
+    return null;
+}
+
 function parseRaceMeta(text) {
     const raceMatch = text.match(/^##\s*R(\d+)\s+(.+)$/m);
     if (!raceMatch) {
@@ -210,10 +254,12 @@ function parseRaceMeta(text) {
 
     const distanceMatch = text.match(/(\d{3,4})m/i);
     const classMatch = text.match(/Class\s*:\s*([^\n\r]+)/i);
+    const raceNo = parseInt(raceMatch[1], 10);
 
     return {
-        race_no: parseInt(raceMatch[1], 10),
+        race_no: raceNo,
         race_name: raceMatch[2].trim(),
+        start_time: parseRaceStartTime(text, raceNo),
         distance: distanceMatch ? parseInt(distanceMatch[1], 10) : null,
         race_class: classMatch ? classMatch[1].trim() : null
     };
@@ -238,6 +284,7 @@ function parseResultsStyleMeta(text) {
     return {
         race_no,
         race_name,
+        start_time: parseRaceStartTime(text, race_no),
         distance: distanceMatch ? parseInt(distanceMatch[1], 10) : null,
         race_class: readValueAfterLabel(raceLines, 'Class') || null,
         track: trackProfileMatch ? trackProfileMatch[1].trim() : null,
@@ -320,6 +367,7 @@ function parsePastedFormGuide(text, tracksByState = {}) {
         race = {
             race_no: resultsMeta.race_no,
             race_name: resultsMeta.race_name,
+            start_time: resultsMeta.start_time,
             distance: resultsMeta.distance,
             race_class: resultsMeta.race_class,
             track_condition: resultsMeta.track_condition
@@ -350,7 +398,7 @@ function parsePastedFormGuide(text, tracksByState = {}) {
             track: meeting.track,
             race_no: race.race_no,
             race_name: race.race_name,
-            start_time: null,
+            start_time: race.start_time || null,
             distance: race.distance,
             track_condition: race.track_condition || null,
             race_class: race.race_class,
@@ -386,5 +434,6 @@ function parsePastedFormGuide(text, tracksByState = {}) {
 
 module.exports = {
     parsePastedFormGuide,
-    inferStateFromTrack
+    inferStateFromTrack,
+    parseRaceStartTime
 };
