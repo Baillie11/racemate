@@ -440,8 +440,8 @@ async function renderToday() {
                                         ? 'runner-result-lost'
                                         : 'runner-result-neutral'}">
                                 <div class="runner-info">
-                                    ${formatBetRunnerLabel(race.bet_runners) ? `<div class="runner-name"><strong>${escapeHtml(formatBetRunnerLabel(race.bet_runners))}</strong></div>` : ''}
                                     <div class="runner-name">R${race.race_no}: ${race.race_name || `Race ${race.race_no}`}</div>
+                                    ${formatBetRunnerLabel(race.bet_runners) ? `<div class="runner-name bet-runner-name"><strong>${escapeHtml(formatBetRunnerLabel(race.bet_runners))}</strong></div>` : ''}
                                     <div class="runner-meta">
                                         ${formatRaceDate(item.meeting.date)} • ${race.distance || '-'}m • ${race.pending_bets > 0 ? `Pending bets: ${race.pending_bets}` : 'No Bet Recommended'}
                                         ${race.result_entered ? ` • Results: ${race.placings?.first || '-'}-${race.placings?.second || '-'}-${race.placings?.third || '-'} • ${race.outcome_text || 'No win'}` : ''}
@@ -983,6 +983,9 @@ function renderSelectionCard(analysis) {
                         ${analysis.skipReasons.map(r => `<div class="factor-item">${formatSkipReason(r, analysis)}</div>`).join('')}
                     </div>
                 ` : ''}
+                <div class="selection-actions">
+                    <button onclick="navigate('#/settings')" class="btn btn-light">Place another bet</button>
+                </div>
             </div>
         `;
     }
@@ -1129,7 +1132,25 @@ async function renderBet(runnerId) {
                 </div>
             </div>
         </div>
-        
+
+        <div id="paste-duplicate-modal" class="modal-overlay hidden">
+            <div class="modal">
+                <div class="modal-header">
+                    <div class="modal-title">Race already exists</div>
+                </div>
+                <div class="modal-body">
+                    <div id="paste-duplicate-summary"></div>
+                    <div class="text-muted mt-2">
+                        Updating will refresh the existing race and runner details from the pasted data.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="paste-duplicate-cancel" class="btn btn-outline" type="button">Cancel</button>
+                    <button id="paste-duplicate-update" class="btn btn-primary" type="button">Update Existing</button>
+                </div>
+            </div>
+        </div>
+
         <div class="card">
             <h2 class="card-title">Bet Details</h2>
             <div class="form-row">
@@ -2335,18 +2356,51 @@ async function renderSettings() {
         }
     });
 
-    // Pasted text import
-    document.getElementById('import-paste-btn').addEventListener('click', async () => {
-        const text = document.getElementById('paste-data').value;
-        const status = document.getElementById('paste-status');
+    const duplicatePasteModal = document.getElementById('paste-duplicate-modal');
+    const duplicatePasteSummary = document.getElementById('paste-duplicate-summary');
+    const duplicatePasteUpdate = document.getElementById('paste-duplicate-update');
+    const duplicatePasteCancel = document.getElementById('paste-duplicate-cancel');
 
-        if (!text || !text.trim()) {
-            toast('Please paste race data first', 'warning');
-            return;
-        }
+    function askToUpdateExistingPaste(preview) {
+        const existing = preview.existing || {};
+        const parsedMeeting = preview.parsed?.meeting || {};
+        const parsedRace = preview.parsed?.race || {};
+        duplicatePasteSummary.innerHTML = `
+            <div>
+                <strong>${escapeHtml(existing.track || parsedMeeting.track || 'Unknown')} (${escapeHtml(existing.state || parsedMeeting.state || 'Unknown')})</strong>
+            </div>
+            <div class="mt-1">
+                ${formatRaceDate(existing.date || parsedMeeting.date || '')} &bull;
+                R${escapeHtml(existing.race_no || parsedRace.race_no || '?')}: ${escapeHtml(existing.race_name || parsedRace.race_name || `Race ${parsedRace.race_no || '?'}`)}
+            </div>
+            <div class="runner-meta mt-1">
+                Existing race ID #${escapeHtml(existing.race_id || '-')} &bull;
+                ${Number(existing.runners || 0)} stored runner${Number(existing.runners || 0) === 1 ? '' : 's'} &bull;
+                ${Number(preview.parsed?.runners || 0)} pasted runner${Number(preview.parsed?.runners || 0) === 1 ? '' : 's'}
+            </div>
+        `;
+        duplicatePasteModal.classList.remove('hidden');
 
-        status.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+        return new Promise(resolve => {
+            const cleanup = () => {
+                duplicatePasteModal.classList.add('hidden');
+                duplicatePasteUpdate.removeEventListener('click', onUpdate);
+                duplicatePasteCancel.removeEventListener('click', onCancel);
+            };
+            const onUpdate = () => {
+                cleanup();
+                resolve(true);
+            };
+            const onCancel = () => {
+                cleanup();
+                resolve(false);
+            };
+            duplicatePasteUpdate.addEventListener('click', onUpdate);
+            duplicatePasteCancel.addEventListener('click', onCancel);
+        });
+    }
 
+    async function importPastedText(text, status) {
         try {
             const result = await api('/import/paste', {
                 method: 'POST',
@@ -2438,6 +2492,43 @@ async function renderSettings() {
             toast('Paste processed successfully', 'success');
         } catch (err) {
             status.innerHTML = `<div class="text-danger">${err.message}</div>`;
+        }
+    }
+
+    // Pasted text import
+    document.getElementById('import-paste-btn').addEventListener('click', async () => {
+        const text = document.getElementById('paste-data').value;
+        const status = document.getElementById('paste-status');
+
+        if (!text || !text.trim()) {
+            toast('Please paste race data first', 'warning');
+            return;
+        }
+
+        status.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+        try {
+            const preview = await api('/import/paste/preview', {
+                method: 'POST',
+                body: { text },
+                silentError: true
+            });
+
+            if (preview.duplicate && preview.type === 'form_guide') {
+                status.innerHTML = '<div class="text-warning">This race already exists. Choose whether to update it or cancel the import.</div>';
+                const shouldUpdate = await askToUpdateExistingPaste(preview);
+                if (!shouldUpdate) {
+                    status.innerHTML = '<div class="text-muted">Import cancelled. Existing race was not changed.</div>';
+                    toast('Import cancelled', 'warning');
+                    return;
+                }
+                status.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            }
+
+            await importPastedText(text, status);
+        } catch (err) {
+            status.innerHTML = `<div class="text-danger">${err.message}</div>`;
+            toast(err.message, 'error');
         }
     });
     

@@ -1355,6 +1355,65 @@ app.post('/api/import/json', (req, res) => {
     }
 });
 
+function buildPasteImportPreview(text) {
+    if (!text || !String(text).trim()) {
+        throw new Error('Paste data is required');
+    }
+
+    const tracksByState = fs.existsSync(TRACKS_PATH)
+        ? JSON.parse(fs.readFileSync(TRACKS_PATH, 'utf8'))
+        : normalizeTrackMap();
+
+    const parsed = parsePastedFormGuide(text, tracksByState);
+    const raceNo = parseInt(parsed.race?.race_no, 10);
+    const meetingDate = parsed.meeting?.date || new Date().toISOString().split('T')[0];
+    const meetingState = parsed.meeting?.state || 'VIC';
+    const meetingTrack = parsed.meeting?.track || 'Unknown';
+    const meeting = db.meetings.getByDateTrack(meetingDate, meetingState, meetingTrack);
+    const race = meeting && Number.isFinite(raceNo)
+        ? db.races.getByMeetingAndNumber(meeting.id, raceNo)
+        : null;
+    const runnerCount = race ? db.runners.getByRace(race.id).length : 0;
+
+    return {
+        success: true,
+        type: parsed.records.length > 0 ? 'form_guide' : (parsed.resultsPlacings?.length ? 'results' : 'unknown'),
+        duplicate: Boolean(race),
+        existing: race ? {
+            meeting_id: meeting.id,
+            race_id: race.id,
+            track: meeting.track,
+            state: meeting.state,
+            date: meeting.date,
+            race_no: race.race_no,
+            race_name: race.race_name,
+            start_time: race.start_time,
+            distance: race.distance,
+            runners: runnerCount
+        } : null,
+        parsed: {
+            meeting: {
+                date: meetingDate,
+                state: meetingState,
+                track: meetingTrack
+            },
+            race: parsed.race,
+            records: parsed.records.length,
+            runners: parsed.records.length,
+            resultsPlacings: parsed.resultsPlacings || []
+        }
+    };
+}
+
+// POST /api/import/paste/preview - Parse pasted data and detect existing race before writing
+app.post('/api/import/paste/preview', (req, res) => {
+    try {
+        res.json(buildPasteImportPreview(req.body?.text));
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
 // POST /api/import/paste - Import form guide from pasted markdown/text
 app.post('/api/import/paste', async (req, res) => {
     try {

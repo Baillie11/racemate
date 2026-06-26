@@ -455,6 +455,16 @@ body {
     color: white;
 }
 
+.btn-light {
+    background: white;
+    color: var(--text);
+    border: 1px solid rgba(255,255,255,0.7);
+}
+
+.btn-light:hover {
+    background: rgba(255,255,255,0.9);
+}
+
 .btn-outline {
     background: transparent;
     border: 1px solid var(--border);
@@ -692,6 +702,14 @@ body {
     margin-top: 16px;
     padding-top: 16px;
     border-top: 1px solid rgba(255,255,255,0.2);
+}
+
+.selection-actions {
+    margin-top: 16px;
+}
+
+.bet-runner-name {
+    margin-top: 4px;
 }
 
 .factor-item {
