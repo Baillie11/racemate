@@ -243,7 +243,7 @@ Current providers:
 
 - `sample` - working sample provider for local testing and UI development.
 - `tab` - placeholder only. Add a compliant feed/API integration before enabling.
-- `racenet` - placeholder only. Add a compliant feed/API integration before enabling.
+- `racenet` - compliant local JSON feed importer only. Direct automated Racenet scraping is disabled unless you have express written permission and wire in an approved feed/API.
 
 Do not use this workflow to bypass logins, paywalls, captchas, robots.txt, or access protections. Real providers should use approved APIs, licensed feeds, exported files, or other compliant data sources.
 
@@ -254,9 +254,55 @@ RACING_PROVIDER=sample
 ENABLE_RACING_CRON=false
 RACING_IMPORT_TIME=02:00
 TIMEZONE=Australia/Brisbane
+RACENET_FEED_PATH=
+RACING_IMPORT_DATE=
 ```
 
 `ENABLE_RACING_CRON=false` is the recommended setting on cPanel shared hosting unless you are sure the Node process stays alive and you want the app itself to run the daily import. You can keep cron disabled and use the dashboard button or API endpoint instead.
+
+### Racenet Provider Notes
+
+Racenet's public `robots.txt` states that automated collection of content/data is prohibited unless you have express written permission from the publisher. For that reason, RaceMate does not include an automated Racenet page scraper, login automation, captcha handling, or paywall bypass.
+
+The `racenet` provider is ready for compliant data you are allowed to use. Set `RACENET_FEED_PATH` to a local JSON file path and run the import with provider `racenet`. The importer filters to Australian horse racing meetings only (`ACT`, `NSW`, `NT`, `QLD`, `SA`, `TAS`, `VIC`, `WA`) and ignores NZ/HK/etc.
+
+Expected feed shape:
+
+```json
+{
+  "meetings": [
+    {
+      "id": "belmont-2026-06-26",
+      "date": "2026-06-26",
+      "track": "Belmont",
+      "state": "WA",
+      "country": "AUS",
+      "races": [
+        {
+          "race_no": 1,
+          "race_name": "Swan Draught Plate",
+          "start_time": "12:35",
+          "distance": 1000,
+          "runners": [
+            {
+              "saddle_no": 1,
+              "horse_name": "Example Runner",
+              "barrier": 4,
+              "weight": 58,
+              "jockey": "A Rider",
+              "trainer": "T Trainer",
+              "odds_win": 4.2,
+              "odds_place": 1.8
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+To import a specific date from a feed, set `RACING_IMPORT_DATE=YYYY-MM-DD`; otherwise the provider uses today's date.
 
 ### Run Import Locally
 
@@ -300,7 +346,8 @@ The importer uses upsert logic for meetings, races, and runners, so it can be sa
 ### Known Limitations
 
 - The only working provider is `sample`.
-- TAB and Racenet provider files are intentional stubs until a compliant data source is selected.
+- TAB is stubbed until your API access is available.
+- Racenet direct scraping is intentionally disabled. The `racenet` provider supports compliant local JSON feed import via `RACENET_FEED_PATH`.
 - Odds snapshots are recorded from provider runner odds when available, but live odds polling is not implemented yet.
 - Results and tips tables are prepared for later strategy testing, but imports are currently stubbed.
 - The scheduled job checks once per minute while the Node process is running. On shared hosting, prefer manual import unless you have confirmed the process model is reliable.

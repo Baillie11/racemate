@@ -1439,6 +1439,11 @@ app.post('/api/import/paste', async (req, res) => {
             db.settings.set('last_state', parsed.meeting.state, userId);
             db.settings.set('last_track', parsed.meeting.track, userId);
             db.settings.set('last_date', parsed.meeting.date, userId);
+            db.settings.set('last_imported_race_no', parsed.race.race_no, userId);
+            db.settings.set('last_imported_race_name', parsed.race.race_name || '', userId);
+            db.settings.set('last_imported_race_track', parsed.meeting.track, userId);
+            db.settings.set('last_imported_race_state', parsed.meeting.state, userId);
+            db.settings.set('last_imported_race_date', parsed.meeting.date, userId);
 
             writeAuditLog('PASTE_FORM_IMPORTED', `Pasted form guide imported for ${parsed.meeting.track} R${parsed.race.race_no}`, {
                 userId,
@@ -1583,6 +1588,11 @@ app.post('/api/import/paste', async (req, res) => {
         db.settings.set('last_state', parsed.meeting.state, userId);
         db.settings.set('last_track', parsed.meeting.track, userId);
         db.settings.set('last_date', parsed.meeting.date, userId);
+        db.settings.set('last_imported_race_no', parsed.race.race_no, userId);
+        db.settings.set('last_imported_race_name', parsed.race.race_name || '', userId);
+        db.settings.set('last_imported_race_track', parsed.meeting.track, userId);
+        db.settings.set('last_imported_race_state', parsed.meeting.state, userId);
+        db.settings.set('last_imported_race_date', parsed.meeting.date, userId);
 
         writeAuditLog('PASTE_FORM_IMPORTED', `Pasted form guide imported for ${parsed.meeting.track}`, {
             userId,

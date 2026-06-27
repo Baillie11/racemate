@@ -98,6 +98,20 @@ function formatBetRunnerLabel(runners = []) {
         .join(', ');
 }
 
+function formatLastImportedRace(settings = {}) {
+    const raceNo = settings.last_imported_race_no;
+    const track = settings.last_imported_race_track;
+    const stateCode = settings.last_imported_race_state;
+
+    if (!raceNo || !track) {
+        return 'No race imported yet';
+    }
+
+    const raceName = settings.last_imported_race_name ? `: ${settings.last_imported_race_name}` : '';
+    const date = settings.last_imported_race_date ? ` • ${formatRaceDate(settings.last_imported_race_date)}` : '';
+    return `R${raceNo}${raceName} • ${track}${stateCode ? ` (${stateCode})` : ''}${date}`;
+}
+
 // ============ State ============
 const state = {
     tracks: createEmptyTrackMap(),
@@ -684,7 +698,14 @@ async function renderHorseProfiles(horseId) {
                             Today: ${importSummary.meetings || 0} meetings &bull; ${importSummary.races || 0} races &bull; ${importSummary.runners || 0} runners
                         </div>
                     </div>
-                    <button id="horse-import-btn" class="btn btn-primary">Import Today's Meetings</button>
+                    <div class="horse-import-actions">
+                        <select id="horse-import-provider" class="form-control">
+                            <option value="sample" ${(state.settings.racing_provider || 'sample') === 'sample' ? 'selected' : ''}>Sample</option>
+                            <option value="racenet" ${state.settings.racing_provider === 'racenet' ? 'selected' : ''}>Racenet feed</option>
+                            <option value="tab" ${state.settings.racing_provider === 'tab' ? 'selected' : ''}>TAB API</option>
+                        </select>
+                        <button id="horse-import-btn" class="btn btn-primary">Import Today's Meetings</button>
+                    </div>
                 </div>
             </div>
             <div class="card">
@@ -719,16 +740,19 @@ async function renderHorseProfiles(horseId) {
 
         document.getElementById('horse-import-btn').addEventListener('click', async event => {
             const button = event.currentTarget;
+            const providerSelect = document.getElementById('horse-import-provider');
             const status = document.getElementById('horse-import-status');
             const summary = document.getElementById('horse-import-summary');
+            const provider = providerSelect?.value || state.settings.racing_provider || 'sample';
             button.disabled = true;
-            status.textContent = 'Importing today\'s meetings...';
+            status.textContent = `Importing today's meetings via ${provider}...`;
             try {
                 const result = await api('/racing/import/today', {
                     method: 'POST',
-                    body: { provider: state.settings.racing_provider || 'sample' }
+                    body: { provider }
                 });
                 const imported = result.summary || {};
+                state.settings.racing_provider = provider;
                 status.textContent = result.success ? 'Import completed successfully' : 'Import completed with warnings';
                 summary.textContent = `${imported.meetings || 0} meetings • ${imported.races || 0} races • ${imported.runners || 0} runners`;
                 toast(status.textContent, result.success ? 'success' : 'warning');
@@ -2197,6 +2221,10 @@ async function renderSettings() {
     app.innerHTML = `
         <div class="card">
             <h2 class="card-title">📥 Import Form Guide</h2>
+            <div class="last-imported-race">
+                <span>Last Imported Race</span>
+                <strong id="last-imported-race-label">${escapeHtml(formatLastImportedRace(state.settings))}</strong>
+            </div>
             <div class="tabs">
                 <button class="tab active" data-tab="paste">Paste Data</button>
                 <button class="tab" data-tab="csv">CSV Upload</button>
@@ -2412,6 +2440,18 @@ async function renderSettings() {
                 state.settings.last_state = meeting.state;
                 state.settings.last_track = meeting.track;
                 state.settings.last_date = meeting.date;
+            }
+            if (meeting && result.parsed?.race) {
+                const race = result.parsed.race;
+                state.settings.last_imported_race_no = race.race_no;
+                state.settings.last_imported_race_name = race.race_name || '';
+                state.settings.last_imported_race_track = meeting.track;
+                state.settings.last_imported_race_state = meeting.state;
+                state.settings.last_imported_race_date = meeting.date;
+                const lastImportedLabel = document.getElementById('last-imported-race-label');
+                if (lastImportedLabel) {
+                    lastImportedLabel.textContent = formatLastImportedRace(state.settings);
+                }
             }
 
             const importedMeetings = Number(result.meetings || 0);

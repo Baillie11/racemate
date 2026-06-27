@@ -207,6 +207,7 @@ body {
 
 .horse-page-toolbar,
 .horse-import-toolbar,
+.horse-import-actions,
 .horse-profile-title,
 .horse-history-row {
     display: flex;
@@ -219,6 +220,36 @@ body {
     display: grid;
     grid-template-columns: minmax(220px, 320px) auto;
     gap: 8px;
+}
+
+.horse-import-actions {
+    justify-content: flex-end;
+}
+
+.horse-import-actions select {
+    min-width: 150px;
+}
+
+.last-imported-race {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: center;
+    margin: 0 0 16px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+}
+
+.last-imported-race span {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.last-imported-race strong {
+    text-align: right;
 }
 
 .horse-profile-row {
@@ -310,9 +341,20 @@ body {
 @media (max-width: 767px) {
     .horse-page-toolbar,
     .horse-import-toolbar,
+    .horse-import-actions,
     .horse-history-row {
         align-items: stretch;
         flex-direction: column;
+    }
+
+    .last-imported-race {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .last-imported-race strong {
+        text-align: left;
     }
 
     .horse-search {
