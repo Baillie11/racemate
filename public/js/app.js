@@ -119,9 +119,11 @@ function formatLastImportedRace(settings = {}) {
         return 'No race imported yet';
     }
 
-    const raceName = settings.last_imported_race_name ? `: ${settings.last_imported_race_name}` : '';
-    const date = settings.last_imported_race_date ? ` • ${formatRaceDate(settings.last_imported_race_date)}` : '';
-    return `R${raceNo}${raceName} • ${track}${stateCode ? ` (${stateCode})` : ''}${date}`;
+    const dateLabel = formatRaceDate(settings.last_imported_race_date);
+    const locationLabel = `${track}${stateCode ? ` (${stateCode})` : ''}`;
+    const prefixLabel = `${dateLabel}, ${locationLabel} &bull; R${raceNo}:`;
+    const importedRaceName = settings.last_imported_race_name || `Race ${raceNo}`;
+    return `<strong>${escapeHtml(prefixLabel)}</strong> ${escapeHtml(importedRaceName)}`;
 }
 
 // ============ State ============
@@ -2216,7 +2218,7 @@ async function renderSettings() {
             <h2 class="card-title">📥 Import Form Guide</h2>
             <div class="last-imported-race">
                 <span>Last Imported Race</span>
-                <strong id="last-imported-race-label">${escapeHtml(formatLastImportedRace(state.settings))}</strong>
+                <span id="last-imported-race-label">${formatLastImportedRace(state.settings)}</span>
             </div>
             <div class="tabs">
                 <button class="tab active" data-tab="paste">Paste Data</button>
@@ -2589,7 +2591,7 @@ async function renderSettings() {
                 state.settings.last_imported_race_date = meeting.date;
                 const lastImportedLabel = document.getElementById('last-imported-race-label');
                 if (lastImportedLabel) {
-                    lastImportedLabel.textContent = formatLastImportedRace(state.settings);
+                    lastImportedLabel.innerHTML = formatLastImportedRace(state.settings);
                 }
             }
 
