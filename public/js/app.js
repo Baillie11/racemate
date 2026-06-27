@@ -1156,25 +1156,6 @@ async function renderBet(runnerId) {
                 </div>
             </div>
         </div>
-
-        <div id="paste-duplicate-modal" class="modal-overlay hidden">
-            <div class="modal">
-                <div class="modal-header">
-                    <div class="modal-title">Race already exists</div>
-                </div>
-                <div class="modal-body">
-                    <div id="paste-duplicate-summary"></div>
-                    <div class="text-muted mt-2">
-                        Updating will refresh the existing race and runner details from the pasted data.
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button id="paste-duplicate-cancel" class="btn btn-outline" type="button">Cancel</button>
-                    <button id="paste-duplicate-update" class="btn btn-primary" type="button">Update Existing</button>
-                </div>
-            </div>
-        </div>
-
         <div class="card">
             <h2 class="card-title">Bet Details</h2>
             <div class="form-row">
@@ -2232,11 +2213,13 @@ async function renderSettings() {
             </div>
             
             <div id="tab-paste">
+                <div class="paste-import-actions">
+                    <button id="import-paste-btn" class="btn btn-primary">Import Pasted Data</button>
+                </div>
                 <div class="form-group">
                     <label class="form-label">Paste race data text</label>
-                    <textarea id="paste-data" class="form-control" rows="14" placeholder="Paste race content here (including race header, field links, and runners)..."></textarea>
+                    <textarea id="paste-data" class="form-control" rows="10" placeholder="Paste race content here (including race header, field links, and runners)..."></textarea>
                 </div>
-                <button id="import-paste-btn" class="btn btn-primary">Import Pasted Data</button>
                 <div id="paste-status" class="mt-2 text-muted">
                     Tip: Include the race header and form-guide URL lines so track/date can be detected.
                 </div>
@@ -2260,6 +2243,24 @@ async function renderSettings() {
                 <button id="import-url-btn" class="btn btn-primary">Import from URL</button>
                 <div id="url-status" class="mt-2 text-muted">
                     Note: URL import only works with publicly accessible pages. Most racing sites require login.
+                </div>
+            </div>
+        </div>
+
+        <div id="paste-duplicate-modal" class="modal-overlay hidden">
+            <div class="modal">
+                <div class="modal-header">
+                    <div class="modal-title">Race already exists</div>
+                </div>
+                <div class="modal-body">
+                    <div id="paste-duplicate-summary"></div>
+                    <div class="text-muted mt-2">
+                        Updating will refresh the existing race and runner details from the pasted data.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="paste-duplicate-cancel" class="btn btn-outline" type="button">Cancel</button>
+                    <button id="paste-duplicate-update" class="btn btn-primary" type="button">Update Existing</button>
                 </div>
             </div>
         </div>
@@ -2393,6 +2394,9 @@ async function renderSettings() {
         const existing = preview.existing || {};
         const parsedMeeting = preview.parsed?.meeting || {};
         const parsedRace = preview.parsed?.race || {};
+        if (!duplicatePasteModal || !duplicatePasteSummary || !duplicatePasteUpdate || !duplicatePasteCancel) {
+            return Promise.resolve(window.confirm('This race already exists. Update the existing race with the pasted data?'));
+        }
         duplicatePasteSummary.innerHTML = `
             <div>
                 <strong>${escapeHtml(existing.track || parsedMeeting.track || 'Unknown')} (${escapeHtml(existing.state || parsedMeeting.state || 'Unknown')})</strong>

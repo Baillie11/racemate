@@ -252,6 +252,12 @@ body {
     text-align: right;
 }
 
+.paste-import-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 12px;
+}
+
 .horse-profile-row {
     width: 100%;
     display: grid;
