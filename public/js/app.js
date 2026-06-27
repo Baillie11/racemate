@@ -98,6 +98,18 @@ function formatBetRunnerLabel(runners = []) {
         .join(', ');
 }
 
+function downloadJsonFile(filename, data) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
 function formatLastImportedRace(settings = {}) {
     const raceNo = settings.last_imported_race_no;
     const track = settings.last_imported_race_track;
@@ -2208,6 +2220,7 @@ async function renderSettings() {
             </div>
             <div class="tabs">
                 <button class="tab active" data-tab="paste">Paste Data</button>
+                <button class="tab" data-tab="ocr">Screenshot OCR</button>
                 <button class="tab" data-tab="csv">CSV Upload</button>
                 <button class="tab" data-tab="url">URL Import</button>
             </div>
@@ -2223,6 +2236,27 @@ async function renderSettings() {
                 <div id="paste-status" class="mt-2 text-muted">
                     Tip: Include the race header and form-guide URL lines so track/date can be detected.
                 </div>
+            </div>
+
+            <div id="tab-ocr" class="hidden">
+                <label class="file-upload">
+                    <div class="file-upload-icon">📷</div>
+                    <div>Click to upload screenshot image</div>
+                    <input type="file" id="ocr-image-file" accept="image/*">
+                </label>
+                <div id="ocr-status" class="mt-2 text-muted">
+                    Upload a screenshot you captured yourself. OCR runs in your browser using RaceMate's self-hosted OCR files.
+                </div>
+                <div class="form-group mt-2">
+                    <label class="form-label">Extracted text</label>
+                    <textarea id="ocr-text" class="form-control" rows="10" placeholder="OCR text will appear here. You can edit it before parsing."></textarea>
+                </div>
+                <div class="flex gap-1 mb-2">
+                    <button id="ocr-parse-btn" class="btn btn-outline" type="button">Parse to JSON</button>
+                    <button id="ocr-use-paste-btn" class="btn btn-primary" type="button">Use in Paste Import</button>
+                    <button id="ocr-download-json-btn" class="btn btn-outline" type="button" disabled>Download JSON</button>
+                </div>
+                <pre id="ocr-json-preview" class="json-preview hidden"></pre>
             </div>
 
             <div id="tab-csv" class="hidden">
@@ -2364,6 +2398,7 @@ async function renderSettings() {
             tab.classList.add('active');
             document.getElementById('tab-csv').classList.toggle('hidden', tab.dataset.tab !== 'csv');
             document.getElementById('tab-paste').classList.toggle('hidden', tab.dataset.tab !== 'paste');
+            document.getElementById('tab-ocr').classList.toggle('hidden', tab.dataset.tab !== 'ocr');
             document.getElementById('tab-url').classList.toggle('hidden', tab.dataset.tab !== 'url');
         });
     });
@@ -2383,6 +2418,106 @@ async function renderSettings() {
         } catch (err) {
             status.innerHTML = `<div class="text-danger">${err.message}</div>`;
         }
+    });
+
+    let latestOcrJson = null;
+    const ocrFileInput = document.getElementById('ocr-image-file');
+    const ocrStatus = document.getElementById('ocr-status');
+    const ocrText = document.getElementById('ocr-text');
+    const ocrParseBtn = document.getElementById('ocr-parse-btn');
+    const ocrUsePasteBtn = document.getElementById('ocr-use-paste-btn');
+    const ocrDownloadJsonBtn = document.getElementById('ocr-download-json-btn');
+    const ocrJsonPreview = document.getElementById('ocr-json-preview');
+
+    function setOcrStatus(message, type = 'muted') {
+        const className = type === 'error' ? 'text-danger' : type === 'success' ? 'text-success' : type === 'warning' ? 'text-warning' : 'text-muted';
+        ocrStatus.innerHTML = `<span class="${className}">${escapeHtml(message)}</span>`;
+    }
+
+    ocrFileInput?.addEventListener('change', async event => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        if (!window.Tesseract?.createWorker) {
+            setOcrStatus('OCR engine is not available. Refresh the page and try again.', 'error');
+            return;
+        }
+
+        ocrText.value = '';
+        latestOcrJson = null;
+        ocrDownloadJsonBtn.disabled = true;
+        ocrJsonPreview.classList.add('hidden');
+        setOcrStatus('Preparing OCR...');
+
+        let worker;
+        try {
+            worker = await Tesseract.createWorker('eng', 1, {
+                workerPath: appUrl('/vendor/tesseract/worker.min.js'),
+                corePath: appUrl('/vendor/tesseract-core'),
+                langPath: appUrl('/vendor/tesseract-lang'),
+                cacheMethod: 'none',
+                logger: message => {
+                    if (message.status) {
+                        const progress = Number.isFinite(message.progress) ? ` ${Math.round(message.progress * 100)}%` : '';
+                        setOcrStatus(`${message.status}${progress}`);
+                    }
+                }
+            });
+            const { data } = await worker.recognize(file);
+            ocrText.value = data?.text || '';
+            setOcrStatus(ocrText.value.trim() ? 'OCR completed. Review the text, then parse to JSON or use it in Paste Import.' : 'OCR completed, but no text was detected.', ocrText.value.trim() ? 'success' : 'warning');
+        } catch (err) {
+            setOcrStatus(err.message || 'OCR failed', 'error');
+        } finally {
+            if (worker) {
+                await worker.terminate();
+            }
+        }
+    });
+
+    ocrParseBtn?.addEventListener('click', async () => {
+        const text = ocrText.value.trim();
+        if (!text) {
+            toast('OCR text is empty', 'warning');
+            return;
+        }
+
+        setOcrStatus('Parsing OCR text...');
+        try {
+            latestOcrJson = await api('/import/paste/parse', {
+                method: 'POST',
+                body: { text }
+            });
+            ocrJsonPreview.textContent = JSON.stringify(latestOcrJson.parsed || latestOcrJson, null, 2);
+            ocrJsonPreview.classList.remove('hidden');
+            ocrDownloadJsonBtn.disabled = false;
+            setOcrStatus('Parsed OCR text successfully. Review the JSON before importing.', 'success');
+        } catch (err) {
+            latestOcrJson = null;
+            ocrDownloadJsonBtn.disabled = true;
+            ocrJsonPreview.classList.add('hidden');
+            setOcrStatus(err.message || 'Could not parse OCR text', 'error');
+        }
+    });
+
+    ocrUsePasteBtn?.addEventListener('click', () => {
+        const text = ocrText.value.trim();
+        if (!text) {
+            toast('OCR text is empty', 'warning');
+            return;
+        }
+
+        document.getElementById('paste-data').value = text;
+        document.querySelector('.tab[data-tab="paste"]')?.click();
+        document.getElementById('paste-status').innerHTML = '<div class="text-success">OCR text copied into Paste Data. Review it, then import.</div>';
+    });
+
+    ocrDownloadJsonBtn?.addEventListener('click', () => {
+        if (!latestOcrJson) {
+            toast('Parse OCR text first', 'warning');
+            return;
+        }
+        downloadJsonFile('racemate-ocr-import.json', latestOcrJson.parsed || latestOcrJson);
     });
 
     const duplicatePasteModal = document.getElementById('paste-duplicate-modal');

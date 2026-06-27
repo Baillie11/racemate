@@ -258,6 +258,19 @@ body {
     margin-bottom: 12px;
 }
 
+.json-preview {
+    max-height: 320px;
+    overflow: auto;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #0f172a;
+    color: #e2e8f0;
+    font-size: 0.85rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+
 .horse-profile-row {
     width: 100%;
     display: grid;

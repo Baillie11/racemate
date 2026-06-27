@@ -38,7 +38,7 @@ function ensureDatabaseReady() {
 }
 
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 if (BASE_PATH) {
     app.use((req, res, next) => {
         if (req.url === BASE_PATH) {
@@ -51,6 +51,12 @@ if (BASE_PATH) {
 }
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(BASE_PATH, express.static(path.join(__dirname, 'public')));
+app.use('/vendor/tesseract', express.static(path.join(__dirname, 'node_modules', 'tesseract.js', 'dist')));
+app.use(`${BASE_PATH}/vendor/tesseract`, express.static(path.join(__dirname, 'node_modules', 'tesseract.js', 'dist')));
+app.use('/vendor/tesseract-core', express.static(path.join(__dirname, 'node_modules', 'tesseract.js-core')));
+app.use(`${BASE_PATH}/vendor/tesseract-core`, express.static(path.join(__dirname, 'node_modules', 'tesseract.js-core')));
+app.use('/vendor/tesseract-lang', express.static(path.join(__dirname, 'node_modules', '@tesseract.js-data', 'eng', '4.0.0')));
+app.use(`${BASE_PATH}/vendor/tesseract-lang`, express.static(path.join(__dirname, 'node_modules', '@tesseract.js-data', 'eng', '4.0.0')));
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -1409,6 +1415,36 @@ function buildPasteImportPreview(text) {
 app.post('/api/import/paste/preview', (req, res) => {
     try {
         res.json(buildPasteImportPreview(req.body?.text));
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+// POST /api/import/paste/parse - Parse pasted/OCR text into JSON without writing to the DB
+app.post('/api/import/paste/parse', (req, res) => {
+    try {
+        const text = req.body?.text;
+        if (!text || !String(text).trim()) {
+            return res.status(400).json({ error: 'Paste data is required' });
+        }
+
+        const tracksByState = fs.existsSync(TRACKS_PATH)
+            ? JSON.parse(fs.readFileSync(TRACKS_PATH, 'utf8'))
+            : normalizeTrackMap();
+        const parsed = parsePastedFormGuide(text, tracksByState);
+        const preview = buildPasteImportPreview(text);
+
+        res.json({
+            success: true,
+            duplicate: preview.duplicate,
+            existing: preview.existing,
+            parsed: {
+                meeting: parsed.meeting,
+                race: parsed.race,
+                records: parsed.records,
+                resultsPlacings: parsed.resultsPlacings || []
+            }
+        });
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
