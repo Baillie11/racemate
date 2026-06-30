@@ -1483,7 +1483,7 @@ async function renderResults(preselectedRaceId) {
             } catch (err) {}
         }
 
-        const selectedRaceStatus = state.resultsRaceStatusFilter || 'unsettled';
+        const selectedRaceStatus = state.resultsRaceStatusFilter || 'pending_bets';
         const selectedRaceSort = state.resultsRaceSort || 'date_track_race';
         const visibleRaceOptions = raceOptions
             .filter(race => raceMatchesStatusFilter(race, selectedRaceStatus))
@@ -1504,8 +1504,8 @@ async function renderResults(preselectedRaceId) {
                         <label class="form-label">Race Status</label>
                         <select id="results-race-status-select" class="form-control">
                             <option value="all" ${selectedRaceStatus === 'all' ? 'selected' : ''}>All races</option>
-                            <option value="unsettled" ${selectedRaceStatus === 'unsettled' ? 'selected' : ''}>Unsettled races</option>
                             <option value="pending_bets" ${selectedRaceStatus === 'pending_bets' ? 'selected' : ''}>Races with pending bets</option>
+                            <option value="unsettled" ${selectedRaceStatus === 'unsettled' ? 'selected' : ''}>Unsettled races</option>
                             <option value="settled" ${selectedRaceStatus === 'settled' ? 'selected' : ''}>Settled races</option>
                             <option value="no_bet" ${selectedRaceStatus === 'no_bet' ? 'selected' : ''}>No bet races</option>
                         </select>
@@ -1781,14 +1781,14 @@ function renderRaceResultsQueue(races = []) {
             ? `Results: ${race.placings?.first || '-'}-${race.placings?.second || '-'}-${race.placings?.third || '-'}${race.outcome_text ? ` • ${race.outcome_text}` : ''}`
             : 'Unsettled';
         const pendingText = raceHasPendingBets(race)
-            ? `Pending bets: ${race.pending_bets || race.pending_bet_count}`
-            : 'No pending bets';
+            ? ` • Pending bets: ${race.pending_bets || race.pending_bet_count}`
+            : '';
         return `
             <div class="runner-item runner-result-neutral">
                 <div class="runner-info">
                     <div class="runner-name">R${race.race_no}: ${escapeHtml(race.race_name || `Race ${race.race_no}`)}</div>
                     <div class="runner-meta">
-                        ${formatRaceDate(race.date)} • ${escapeHtml(race.track || 'Unknown track')}${race.state ? ` (${escapeHtml(race.state)})` : ''} • ${race.distance || '-'}m • ${pendingText}
+                        ${formatRaceDate(race.date)} • ${escapeHtml(race.track || 'Unknown track')}${race.state ? ` (${escapeHtml(race.state)})` : ''} • ${race.distance || '-'}m${pendingText}
                     </div>
                     <div class="runner-meta">${escapeHtml(resultText)}</div>
                 </div>
