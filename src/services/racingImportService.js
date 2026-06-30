@@ -43,7 +43,13 @@ function normalizeResultRows(rawResults = []) {
 }
 
 function getRaceCandidates(options = {}) {
+    const hasRaceId = Object.prototype.hasOwnProperty.call(options, 'raceId') ||
+        Object.prototype.hasOwnProperty.call(options, 'race_id');
     const raceId = parsePositiveInt(options.raceId || options.race_id);
+    if (hasRaceId && !raceId) {
+        return [];
+    }
+
     if (raceId) {
         const race = db.races.getById(raceId);
         const meeting = race ? db.meetings.getById(race.meeting_id) : null;
