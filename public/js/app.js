@@ -126,6 +126,48 @@ function formatLastImportedRace(settings = {}) {
     return `<strong>${escapeHtml(prefixLabel)}</strong> ${escapeHtml(importedRaceName)}`;
 }
 
+function raceHasPendingBets(race = {}) {
+    return Number(race.pending_bets || 0) > 0 || Number(race.pending_bet_count || 0) > 0;
+}
+
+function raceIsSettled(race = {}) {
+    return Boolean(race.result_entered);
+}
+
+function raceMatchesStatusFilter(race = {}, filter = 'all') {
+    if (filter === 'unsettled') return !raceIsSettled(race);
+    if (filter === 'pending_bets') return raceHasPendingBets(race);
+    if (filter === 'settled') return raceIsSettled(race);
+    if (filter === 'no_bet') return !raceHasPendingBets(race);
+    return true;
+}
+
+function compareRaceCards(a = {}, b = {}, sortBy = 'date_track_race') {
+    const dateCompare = String(a.date || '').localeCompare(String(b.date || ''));
+    const trackCompare = String(a.track || '').localeCompare(String(b.track || ''));
+    const raceCompare = Number(a.race_no || 0) - Number(b.race_no || 0);
+
+    if (sortBy === 'unsettled_first') {
+        const statusCompare = Number(raceIsSettled(a)) - Number(raceIsSettled(b));
+        if (statusCompare !== 0) return statusCompare;
+    }
+
+    if (sortBy === 'pending_first') {
+        const pendingCompare = Number(raceHasPendingBets(b)) - Number(raceHasPendingBets(a));
+        if (pendingCompare !== 0) return pendingCompare;
+    }
+
+    if (sortBy === 'race_number') {
+        if (raceCompare !== 0) return raceCompare;
+        if (dateCompare !== 0) return dateCompare;
+        return trackCompare;
+    }
+
+    if (dateCompare !== 0) return dateCompare;
+    if (trackCompare !== 0) return trackCompare;
+    return raceCompare;
+}
+
 // ============ State ============
 const state = {
     tracks: createEmptyTrackMap(),
@@ -345,6 +387,27 @@ async function renderToday() {
                     ${savedDate ? `<option value="${savedDate}" selected>${formatRaceDate(savedDate)}</option>` : ''}
                 </select>
             </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Race Status</label>
+                    <select id="race-status-select" class="form-control">
+                        <option value="all">All races</option>
+                        <option value="unsettled">Unsettled races</option>
+                        <option value="pending_bets">Races with pending bets</option>
+                        <option value="settled">Settled races</option>
+                        <option value="no_bet">No bet races</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Sort Races</label>
+                    <select id="race-sort-select" class="form-control">
+                        <option value="date_track_race">Date, track, race number</option>
+                        <option value="unsettled_first">Unsettled first</option>
+                        <option value="pending_first">Pending bets first</option>
+                        <option value="race_number">Race number</option>
+                    </select>
+                </div>
+            </div>
             <button id="refresh-dashboard-btn" class="btn btn-primary btn-block">Refresh Dashboard</button>
         </div>
         <div id="meeting-content"></div>
@@ -354,7 +417,11 @@ async function renderToday() {
     const stateSelect = document.getElementById('state-select');
     const trackSelect = document.getElementById('track-select');
     const dateSelect = document.getElementById('date-select');
+    const raceStatusSelect = document.getElementById('race-status-select');
+    const raceSortSelect = document.getElementById('race-sort-select');
     const content = document.getElementById('meeting-content');
+    raceStatusSelect.value = state.homeRaceStatusFilter || 'all';
+    raceSortSelect.value = state.homeRaceSort || 'date_track_race';
     
     function updateTracks() {
         const selectedState = stateSelect.value;
@@ -396,6 +463,10 @@ async function renderToday() {
         const stateVal = stateSelect.value;
         const trackVal = trackSelect.value;
         const dateVal = dateSelect.value || '';
+        const raceStatusVal = raceStatusSelect.value || 'all';
+        const raceSortVal = raceSortSelect.value || 'date_track_race';
+        state.homeRaceStatusFilter = raceStatusVal;
+        state.homeRaceSort = raceSortVal;
 
         content.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
@@ -437,22 +508,45 @@ async function renderToday() {
                 return String(a.meeting?.state || '').localeCompare(String(b.meeting?.state || ''));
             }).map(item => ({
                 ...item,
-                races: [...(item.races || [])].sort((a, b) => Number(a.race_no || 0) - Number(b.race_no || 0))
-            }));
+                races: [...(item.races || [])]
+                    .map(race => ({
+                        ...race,
+                        date: item.meeting?.date || '',
+                        track: item.meeting?.track || '',
+                        state: item.meeting?.state || ''
+                    }))
+                    .filter(race => raceMatchesStatusFilter(race, raceStatusVal))
+                    .sort((a, b) => compareRaceCards(a, b, raceSortVal))
+            })).filter(item => item.races.length > 0);
+            const filteredRaceCount = sortedMeetings.reduce((sum, item) => sum + item.races.length, 0);
+            const filteredPendingCount = sortedMeetings.reduce(
+                (sum, item) => sum + item.races.reduce((inner, race) => inner + Number(race.pending_bets || 0), 0),
+                0
+            );
+
+            if (filteredRaceCount === 0) {
+                content.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📋</div>
+                        <div class="empty-state-text">No races match the selected status filter</div>
+                    </div>
+                `;
+                return;
+            }
 
             content.innerHTML = `
                 <div class="section-heading mb-1">Results</div>
                 <div class="stats-grid mb-2">
                     <div class="stat-card">
-                        <div class="stat-value">${data.summary.meetings}</div>
+                        <div class="stat-value">${sortedMeetings.length}</div>
                         <div class="stat-label">Meetings</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-value">${data.summary.races}</div>
+                        <div class="stat-value">${filteredRaceCount}</div>
                         <div class="stat-label">Races</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-value">${data.summary.pending_bets}</div>
+                        <div class="stat-value">${filteredPendingCount}</div>
                         <div class="stat-label">Pending Bets</div>
                     </div>
                 </div>
@@ -492,6 +586,8 @@ async function renderToday() {
     
     stateSelect.addEventListener('change', updateTracks);
     trackSelect.addEventListener('change', () => {});
+    raceStatusSelect.addEventListener('change', loadDashboard);
+    raceSortSelect.addEventListener('change', loadDashboard);
     updateTracks();
     stateSelect.value = '';
     if (savedTrack && state.tracks[savedState]?.includes(savedTrack)) {
@@ -1326,21 +1422,46 @@ async function renderResults(preselectedRaceId) {
         const bets = await api('/bets?status=pending');
         const allBets = await api('/bets');
         const pendingRaces = [...new Map(bets.map(bet => [bet.race_id, bet])).values()];
-        const fallbackDate = state.settings.last_date || new Date().toISOString().split('T')[0];
-        const dashboard = await api(`/dashboard?date=${encodeURIComponent(fallbackDate)}`, { silentError: true });
+        const dashboard = await api('/dashboard', { silentError: true });
         const dashboardRaces = (dashboard.meetings || []).flatMap(item =>
             (item.races || []).map(race => ({
                 race_id: race.id,
                 race_no: race.race_no,
                 race_name: race.race_name,
+                date: item.meeting?.date || '',
                 track: item.meeting?.track || 'Unknown track',
+                state: item.meeting?.state || '',
+                distance: race.distance || null,
+                pending_bets: race.pending_bets || 0,
+                pending_bet_count: race.pending_bets || 0,
                 result_entered: !!race.result_entered,
                 placings: race.placings || null,
                 outcome_text: race.outcome_text || null
             }))
         );
 
-        const raceOptions = [...new Map([...pendingRaces, ...dashboardRaces].map(r => [r.race_id, r])).values()];
+        const raceOptionsById = new Map();
+        [...dashboardRaces, ...pendingRaces].forEach(r => {
+            const existing = raceOptionsById.get(r.race_id) || {};
+            const hasPlacings = [r.first_saddle, r.second_saddle, r.third_saddle].some(value => value !== null && value !== undefined && value !== '');
+            raceOptionsById.set(r.race_id, {
+                ...existing,
+                ...r,
+                race_id: r.race_id,
+                race_no: r.race_no || existing.race_no,
+                race_name: r.race_name || existing.race_name,
+                date: r.date || existing.date || '',
+                track: r.track || existing.track || 'Unknown track',
+                state: r.state || existing.state || '',
+                distance: r.distance || existing.distance || null,
+                pending_bets: Math.max(Number(existing.pending_bets || 0), Number(r.pending_bets || r.pending_bet_count || (r.status === 'pending' ? 1 : 0))),
+                pending_bet_count: Math.max(Number(existing.pending_bet_count || 0), Number(r.pending_bet_count || r.pending_bets || (r.status === 'pending' ? 1 : 0))),
+                result_entered: Boolean(existing.result_entered || r.result_entered || hasPlacings),
+                placings: r.placings || existing.placings || (hasPlacings ? { first: r.first_saddle, second: r.second_saddle, third: r.third_saddle } : null),
+                outcome_text: r.outcome_text || existing.outcome_text || null
+            });
+        });
+        const raceOptions = [...raceOptionsById.values()];
         const raceIdToSelect = parseInt(preselectedRaceId, 10);
 
         if (Number.isInteger(raceIdToSelect) && raceIdToSelect > 0 && !raceOptions.some(r => r.race_id === raceIdToSelect)) {
@@ -1350,15 +1471,51 @@ async function renderResults(preselectedRaceId) {
                     race_id: race.id,
                     race_no: race.race_no,
                     race_name: race.race_name,
+                    date: race.meeting?.date || '',
                     track: race.meeting?.track || 'Unknown track',
+                    state: race.meeting?.state || '',
+                    pending_bets: 0,
+                    pending_bet_count: 0,
                     result_entered: false,
                     placings: null,
                     outcome_text: null
                 });
             } catch (err) {}
         }
+
+        const selectedRaceStatus = state.resultsRaceStatusFilter || 'unsettled';
+        const selectedRaceSort = state.resultsRaceSort || 'date_track_race';
+        const visibleRaceOptions = raceOptions
+            .filter(race => raceMatchesStatusFilter(race, selectedRaceStatus))
+            .sort((a, b) => compareRaceCards(a, b, selectedRaceSort));
         
         app.innerHTML = `
+            <div class="card">
+                <h2 class="card-title">Race Results Queue</h2>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Race Status</label>
+                        <select id="results-race-status-select" class="form-control">
+                            <option value="all" ${selectedRaceStatus === 'all' ? 'selected' : ''}>All races</option>
+                            <option value="unsettled" ${selectedRaceStatus === 'unsettled' ? 'selected' : ''}>Unsettled races</option>
+                            <option value="pending_bets" ${selectedRaceStatus === 'pending_bets' ? 'selected' : ''}>Races with pending bets</option>
+                            <option value="settled" ${selectedRaceStatus === 'settled' ? 'selected' : ''}>Settled races</option>
+                            <option value="no_bet" ${selectedRaceStatus === 'no_bet' ? 'selected' : ''}>No bet races</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Sort Races</label>
+                        <select id="results-race-sort-select" class="form-control">
+                            <option value="date_track_race" ${selectedRaceSort === 'date_track_race' ? 'selected' : ''}>Date, track, race number</option>
+                            <option value="unsettled_first" ${selectedRaceSort === 'unsettled_first' ? 'selected' : ''}>Unsettled first</option>
+                            <option value="pending_first" ${selectedRaceSort === 'pending_first' ? 'selected' : ''}>Pending bets first</option>
+                            <option value="race_number" ${selectedRaceSort === 'race_number' ? 'selected' : ''}>Race number</option>
+                        </select>
+                    </div>
+                </div>
+                ${visibleRaceOptions.length === 0 ? '<div class="empty-state">No races match this filter</div>' : renderRaceResultsQueue(visibleRaceOptions)}
+            </div>
+
             <div class="card">
                 <h2 class="card-title">Pending Bets</h2>
                 ${bets.length === 0 ? '<div class="empty-state">No pending bets</div>' :
@@ -1408,6 +1565,14 @@ async function renderResults(preselectedRaceId) {
         `;
 
         const settleModal = document.getElementById('settle-race-modal');
+        document.getElementById('results-race-status-select')?.addEventListener('change', async event => {
+            state.resultsRaceStatusFilter = event.target.value;
+            await renderResults();
+        });
+        document.getElementById('results-race-sort-select')?.addEventListener('change', async event => {
+            state.resultsRaceSort = event.target.value;
+            await renderResults();
+        });
         const status = document.getElementById('settle-modal-status');
         const submitButton = document.getElementById('settle-modal-submit');
         const cancelButton = document.getElementById('settle-modal-cancel');
@@ -1561,6 +1726,32 @@ async function renderResults(preselectedRaceId) {
     } catch (err) {
         app.innerHTML = `<div class="empty-state text-danger">${err.message}</div>`;
     }
+}
+
+function renderRaceResultsQueue(races = []) {
+    return races.map(race => {
+        const resultText = race.result_entered
+            ? `Results: ${race.placings?.first || '-'}-${race.placings?.second || '-'}-${race.placings?.third || '-'}${race.outcome_text ? ` • ${race.outcome_text}` : ''}`
+            : 'Unsettled';
+        const pendingText = raceHasPendingBets(race)
+            ? `Pending bets: ${race.pending_bets || race.pending_bet_count}`
+            : 'No pending bets';
+        return `
+            <div class="runner-item runner-result-neutral">
+                <div class="runner-info">
+                    <div class="runner-name">R${race.race_no}: ${escapeHtml(race.race_name || `Race ${race.race_no}`)}</div>
+                    <div class="runner-meta">
+                        ${formatRaceDate(race.date)} • ${escapeHtml(race.track || 'Unknown track')}${race.state ? ` (${escapeHtml(race.state)})` : ''} • ${race.distance || '-'}m • ${pendingText}
+                    </div>
+                    <div class="runner-meta">${escapeHtml(resultText)}</div>
+                </div>
+                <div class="flex gap-1">
+                    <button class="btn btn-outline btn-sm" onclick="navigate('#/race/${race.race_id}')">Open Race</button>
+                    <button class="btn btn-primary btn-sm" type="button" onclick="openSettleRaceModal(${race.race_id})">${race.result_entered ? 'Edit Results' : 'Settle Race'}</button>
+                </div>
+            </div>
+        `;
+    }).join('');
 }
 
 function renderPendingBetsGrouped(bets) {
