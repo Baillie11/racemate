@@ -184,7 +184,20 @@ function parseRunnerChunks(text) {
 function parseMeetingMeta(text, tracksByState) {
     const raceUrlMatch = text.match(/\/form-guide\/horse-racing\/([^/]+?)(?:-(\d{8}))?\/[^/]+?\//i);
     if (!raceUrlMatch) {
-        throw new Error('Could not detect meeting URL slug/date in pasted text.');
+        const inferredTrack = inferTrackFromText(text, tracksByState);
+        const inferredState = inferStateFromTrack(inferredTrack, tracksByState);
+        const longDateMatch = text.match(/(?:Sunday|Saturday|Monday|Tuesday|Wednesday|Thursday|Friday)\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/i);
+        const date = parseDateFromLongText(longDateMatch ? `${longDateMatch[1]} ${longDateMatch[2]} ${longDateMatch[3]}` : null) || getCurrentDateISO();
+
+        if (inferredTrack) {
+            return {
+                date,
+                track: inferredTrack,
+                state: inferredState || 'VIC'
+            };
+        }
+
+        throw new Error('Could not detect the meeting track in pasted text. Please include the track name and race header when pasting.');
     }
 
     const trackSlug = raceUrlMatch[1];
@@ -247,7 +260,7 @@ function parseRaceStartTime(text, raceNo) {
 }
 
 function parseRaceMeta(text) {
-    const raceMatch = text.match(/^##\s*R(\d+)\s+(.+)$/m);
+    const raceMatch = text.match(/^##\s*R(\d+)\s+(.+)$/m) || text.match(/^R(\d+)\s+(.+)$/m);
     if (!raceMatch) {
         throw new Error('Could not detect race number/name header (e.g. ## R5 Race Name).');
     }
