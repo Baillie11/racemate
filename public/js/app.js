@@ -1492,6 +1492,13 @@ async function renderResults(preselectedRaceId) {
         app.innerHTML = `
             <div class="card">
                 <h2 class="card-title">Race Results Queue</h2>
+                <div class="flex gap-1 mb-2">
+                    <button id="import-results-btn" class="btn btn-primary" type="button">Import Available Results</button>
+                    <button id="import-pending-results-btn" class="btn btn-outline" type="button">Import Results for Pending Bets</button>
+                </div>
+                <div id="results-import-status" class="runner-meta mb-2">
+                    Uses the configured racing provider. No scraping or login bypass is performed.
+                </div>
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">Race Status</label>
@@ -1565,6 +1572,46 @@ async function renderResults(preselectedRaceId) {
         `;
 
         const settleModal = document.getElementById('settle-race-modal');
+        async function runResultsImport(onlyPendingBets = false) {
+            const statusEl = document.getElementById('results-import-status');
+            const importButtons = [
+                document.getElementById('import-results-btn'),
+                document.getElementById('import-pending-results-btn')
+            ].filter(Boolean);
+
+            importButtons.forEach(button => { button.disabled = true; });
+            statusEl.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+            try {
+                const result = await api('/racing/import/results', {
+                    method: 'POST',
+                    body: {
+                        onlyPendingBets,
+                        onlyUnsettled: true
+                    }
+                });
+
+                if (typeof result.bankroll === 'number') {
+                    state.bankroll = result.bankroll;
+                    updateBankrollDisplay();
+                }
+
+                const summary = result.summary || {};
+                statusEl.innerHTML = `
+                    <span class="${summary.errors?.length ? 'text-warning' : 'text-success'}">
+                        Imported results for ${summary.races_settled || 0} race(s), settled ${summary.bets_settled || 0} bet(s), checked ${summary.checked || 0} race(s).
+                    </span>
+                `;
+                toast(`Imported results for ${summary.races_settled || 0} race(s)`, summary.errors?.length ? 'warning' : 'success');
+                await renderResults();
+            } catch (err) {
+                statusEl.innerHTML = `<span class="text-danger">${escapeHtml(err.message)}</span>`;
+            } finally {
+                importButtons.forEach(button => { button.disabled = false; });
+            }
+        }
+        document.getElementById('import-results-btn')?.addEventListener('click', () => runResultsImport(false));
+        document.getElementById('import-pending-results-btn')?.addEventListener('click', () => runResultsImport(true));
         document.getElementById('results-race-status-select')?.addEventListener('change', async event => {
             state.resultsRaceStatusFilter = event.target.value;
             await renderResults();

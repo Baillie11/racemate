@@ -338,10 +338,12 @@ curl -X POST http://localhost:3000/api/racing/import/today ^
 - `GET /api/racing/meetings/:id/races` - races for one imported meeting.
 - `GET /api/racing/races/:id/runners` - runners for one imported race.
 - `POST /api/racing/import/today` - run today's configured provider import.
-- `POST /api/racing/import/results` - stub for later results import.
+- `POST /api/racing/import/results` - import available provider results, store placings, and settle matching pending bets.
 - `POST /api/racing/import/odds` - stub for later odds snapshots.
 
 The importer uses upsert logic for meetings, races, and runners, so it can be safely run more than once without duplicating provider-sourced records.
+
+Results import is provider-based. It calls `getResultsForRace()` on the configured provider, so it works with sample/feed data now and can use TAB API results later without changing the dashboard workflow. The Results page also has buttons for importing all available results or only races with pending bets.
 
 ### Known Limitations
 
@@ -349,7 +351,7 @@ The importer uses upsert logic for meetings, races, and runners, so it can be sa
 - TAB is stubbed until your API access is available.
 - Racenet direct scraping is intentionally disabled. The `racenet` provider supports compliant local JSON feed import via `RACENET_FEED_PATH`.
 - Odds snapshots are recorded from provider runner odds when available, but live odds polling is not implemented yet.
-- Results and tips tables are prepared for later strategy testing, but imports are currently stubbed.
+- Tips tables are prepared for later strategy testing, but tips import is not implemented yet.
 - The scheduled job checks once per minute while the Node process is running. On shared hosting, prefer manual import unless you have confirmed the process model is reliable.
 
 ## License

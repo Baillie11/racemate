@@ -1,9 +1,11 @@
 const db = require('../../db/database');
+const bankroll = require('../../services/bankroll');
 const { createRacingProvider } = require('../providers');
 
-function writeImportLog(eventType, message, payload = {}) {
+function writeImportLog(eventType, message, payload = {}, userId = null) {
     try {
         db.auditLogs.create({
+            user_id: userId || null,
             event_type: eventType,
             message,
             entity_type: 'racing_import',
@@ -16,6 +18,76 @@ function writeImportLog(eventType, message, payload = {}) {
 
 function providerName(provider) {
     return provider?.name || process.env.RACING_PROVIDER || 'sample';
+}
+
+function parsePositiveInt(value) {
+    const parsed = parseInt(value, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function normalizeResultRows(rawResults = []) {
+    const rows = Array.isArray(rawResults)
+        ? rawResults
+        : (Array.isArray(rawResults.results) ? rawResults.results : (Array.isArray(rawResults.placings) ? rawResults.placings : []));
+
+    return rows
+        .map(row => ({
+            saddle_no: parsePositiveInt(row.saddle_no ?? row.runner_number ?? row.number),
+            horse_name: row.horse_name || row.runner_name || row.name || null,
+            finishing_position: parsePositiveInt(row.finishing_position ?? row.position ?? row.place),
+            margin: row.margin || null,
+            starting_price: row.starting_price ?? row.sp ?? row.fixed_win_odds ?? null
+        }))
+        .filter(row => row.saddle_no && row.finishing_position)
+        .sort((a, b) => a.finishing_position - b.finishing_position);
+}
+
+function getRaceCandidates(options = {}) {
+    const raceId = parsePositiveInt(options.raceId || options.race_id);
+    if (raceId) {
+        const race = db.races.getById(raceId);
+        const meeting = race ? db.meetings.getById(race.meeting_id) : null;
+        return race && meeting ? [{ race, meeting }] : [];
+    }
+
+    const targetDate = options.date || null;
+    const meetings = targetDate ? db.meetings.getByDate(targetDate) : db.meetings.getAll();
+    return meetings.flatMap(meeting =>
+        db.races.getByMeeting(meeting.id).map(race => ({ race, meeting }))
+    );
+}
+
+function settlePendingBetsForOrder(raceId, resultOrder, userId) {
+    const pendingBets = db.bets.getPendingByRace(raceId, userId);
+    const settled = [];
+
+    for (const bet of pendingBets) {
+        let result = 'lost';
+        let position = null;
+
+        if (bet.saddle_no === resultOrder[0]) {
+            result = 'won';
+            position = 1;
+        } else if (resultOrder[1] && bet.saddle_no === resultOrder[1]) {
+            result = 'placed';
+            position = 2;
+        } else if (resultOrder[2] && bet.saddle_no === resultOrder[2]) {
+            result = 'placed';
+            position = 3;
+        }
+
+        const settlement = bankroll.settleBet(bet.id, result, position, userId);
+        settled.push({
+            bet_id: bet.id,
+            horse_name: bet.horse_name,
+            saddle_no: bet.saddle_no,
+            result,
+            position,
+            profit: settlement.profit
+        });
+    }
+
+    return settled;
 }
 
 async function importToday(options = {}) {
@@ -123,10 +195,121 @@ async function importToday(options = {}) {
     return { success: summary.errors.length === 0, summary };
 }
 
-async function importResults() {
+async function importResults(options = {}) {
+    const provider = options.provider || createRacingProvider(options.providerName);
+    const source = providerName(provider);
+    const userId = parsePositiveInt(options.userId || options.user_id) || 1;
+    const candidates = getRaceCandidates(options);
+    const summary = {
+        provider: source,
+        date: options.date || null,
+        race_id: parsePositiveInt(options.raceId || options.race_id),
+        checked: 0,
+        results_imported: 0,
+        races_settled: 0,
+        bets_settled: 0,
+        skipped: 0,
+        errors: []
+    };
+    const races = [];
+
+    for (const { race, meeting } of candidates) {
+        if (options.onlyUnsettled !== false && db.raceResults.getByRace(race.id, userId)) {
+            summary.skipped += 1;
+            continue;
+        }
+
+        if (options.onlyPendingBets && db.bets.getPendingByRace(race.id, userId).length === 0) {
+            summary.skipped += 1;
+            continue;
+        }
+
+        summary.checked += 1;
+
+        let providerResults = [];
+        try {
+            providerResults = await provider.getResultsForRace({
+                ...race,
+                race_number: race.race_no,
+                race_no: race.race_no,
+                meeting,
+                meeting_date: meeting.date,
+                track_name: meeting.track,
+                state: meeting.state
+            });
+        } catch (err) {
+            summary.errors.push({
+                race_id: race.id,
+                race_no: race.race_no,
+                track: meeting.track,
+                message: err.message
+            });
+            continue;
+        }
+
+        const resultRows = normalizeResultRows(providerResults);
+        const topThree = resultRows
+            .filter(row => row.finishing_position <= 3)
+            .sort((a, b) => a.finishing_position - b.finishing_position)
+            .slice(0, 3);
+
+        if (topThree.length === 0) {
+            summary.skipped += 1;
+            continue;
+        }
+
+        const resultOrder = topThree.map(row => row.saddle_no);
+        const storedResult = db.raceResults.upsert(
+            race.id,
+            resultOrder[0] || null,
+            resultOrder[1] || null,
+            resultOrder[2] || null,
+            userId
+        );
+
+        for (const resultRow of resultRows) {
+            const runner = db.runners.getByRaceAndSaddle(race.id, resultRow.saddle_no);
+            db.importedResults.upsert({
+                race_id: race.id,
+                runner_id: runner?.id || null,
+                finishing_position: resultRow.finishing_position,
+                margin: resultRow.margin,
+                starting_price: resultRow.starting_price
+            });
+        }
+
+        const settled = settlePendingBetsForOrder(race.id, resultOrder, userId);
+        summary.results_imported += resultRows.length;
+        summary.races_settled += 1;
+        summary.bets_settled += settled.length;
+        races.push({
+            race_id: race.id,
+            race_no: race.race_no,
+            race_name: race.race_name,
+            track: meeting.track,
+            state: meeting.state,
+            date: meeting.date,
+            placings: {
+                first: storedResult?.first_saddle || null,
+                second: storedResult?.second_saddle || null,
+                third: storedResult?.third_saddle || null
+            },
+            settled
+        });
+    }
+
+    writeImportLog(
+        summary.errors.length ? 'RACING_RESULTS_IMPORT_COMPLETED_WITH_ERRORS' : 'RACING_RESULTS_IMPORT_COMPLETED',
+        `Racing results import completed: ${summary.races_settled} races settled, ${summary.bets_settled} bets settled`,
+        summary,
+        userId
+    );
+
     return {
-        success: false,
-        message: 'Results import is stubbed until a compliant provider is configured.'
+        success: summary.errors.length === 0,
+        summary,
+        races,
+        bankroll: bankroll.getBankroll(userId)
     };
 }
 

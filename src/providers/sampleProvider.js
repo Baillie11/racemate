@@ -117,6 +117,34 @@ class SampleRacingProvider extends RacingProvider {
             }
         ];
     }
+
+    async getResultsForRace(race) {
+        const raceId = String(race.source_race_id || '').toLowerCase();
+        if (!raceId) {
+            return [];
+        }
+
+        return [
+            {
+                runner_number: 1,
+                horse_name: 'Sample Runner One',
+                finishing_position: 1,
+                starting_price: 4.2
+            },
+            {
+                runner_number: 2,
+                horse_name: 'Sample Runner Two',
+                finishing_position: 2,
+                starting_price: 6
+            },
+            {
+                runner_number: 3,
+                horse_name: 'Sample Late Scratching',
+                finishing_position: 3,
+                starting_price: null
+            }
+        ];
+    }
 }
 
 module.exports = SampleRacingProvider;

@@ -137,6 +137,46 @@ class RacenetProvider extends RacingProvider {
 
         return [];
     }
+
+    async getResultsForRace(race) {
+        const meetings = this.getFeedMeetings();
+        for (const meeting of meetings) {
+            const feedRace = asArray(meeting.races).find(item => {
+                const raceNo = parseInt(item.race_number ?? item.race_no, 10);
+                const sourceRaceId = String(item.source_race_id || item.id || `${meeting.source_meeting_id}-R${raceNo}`);
+                return sourceRaceId === race.source_race_id ||
+                    (raceNo === parseInt(race.race_number ?? race.race_no, 10) &&
+                        meeting.meeting_date === (race.meeting_date || race.meeting?.date) &&
+                        meeting.track_name === (race.track_name || race.meeting?.track));
+            });
+
+            if (!feedRace) continue;
+
+            const results = asArray(feedRace.results || feedRace.placings);
+            if (results.length > 0) {
+                return results.map(result => ({
+                    runner_number: parseInt(result.runner_number ?? result.saddle_no ?? result.number, 10),
+                    horse_name: result.horse_name || result.name || null,
+                    finishing_position: parseInt(result.finishing_position ?? result.position ?? result.place, 10),
+                    margin: result.margin || null,
+                    starting_price: parseFloat(result.starting_price ?? result.sp) || null
+                })).filter(result => result.runner_number && result.finishing_position);
+            }
+
+            return asArray(feedRace.runners)
+                .filter(runner => runner.finishing_position || runner.position || runner.place)
+                .map(runner => ({
+                    runner_number: parseInt(runner.runner_number ?? runner.saddle_no, 10),
+                    horse_name: runner.horse_name || runner.name || null,
+                    finishing_position: parseInt(runner.finishing_position ?? runner.position ?? runner.place, 10),
+                    margin: runner.margin || null,
+                    starting_price: parseFloat(runner.starting_price ?? runner.sp) || null
+                }))
+                .filter(result => result.runner_number && result.finishing_position);
+        }
+
+        return [];
+    }
 }
 
 module.exports = RacenetProvider;

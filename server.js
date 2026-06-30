@@ -535,7 +535,10 @@ app.post('/api/racing/import/today', async (req, res) => {
 
 // POST /api/racing/import/results - Stub for later provider results import
 app.post('/api/racing/import/results', async (req, res) => {
-    res.json(await racingImportService.importResults(req.body || {}));
+    res.json(await racingImportService.importResults({
+        ...(req.body || {}),
+        userId: getRequestUserId(req)
+    }));
 });
 
 // POST /api/racing/import/odds - Stub for later provider odds snapshots
