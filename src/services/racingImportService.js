@@ -97,7 +97,9 @@ function settlePendingBetsForOrder(raceId, resultOrder, userId) {
 }
 
 async function importToday(options = {}) {
-    const provider = options.provider || createRacingProvider(options.providerName);
+    const provider = options.provider || createRacingProvider(options.providerName, {
+        feedPath: options.racenetFeedPath
+    });
     const source = providerName(provider);
     const startedAt = new Date().toISOString();
     const summary = {
@@ -202,7 +204,9 @@ async function importToday(options = {}) {
 }
 
 async function importResults(options = {}) {
-    const provider = options.provider || createRacingProvider(options.providerName);
+    const provider = options.provider || createRacingProvider(options.providerName, {
+        feedPath: options.racenetFeedPath
+    });
     const source = providerName(provider);
     const userId = parsePositiveInt(options.userId || options.user_id) || 1;
     const candidates = getRaceCandidates(options);

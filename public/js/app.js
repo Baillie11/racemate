@@ -857,6 +857,10 @@ async function renderHorseProfiles(horseId) {
             button.disabled = true;
             status.textContent = `Importing today's meetings via ${provider}...`;
             try {
+                await api('/settings', {
+                    method: 'POST',
+                    body: { racing_provider: provider }
+                });
                 const result = await api('/racing/import/today', {
                     method: 'POST',
                     body: { provider }
@@ -2560,6 +2564,25 @@ async function renderSettings() {
             <button id="delete-meeting-btn" class="btn btn-danger">Delete Meeting Data</button>
             <div id="delete-status" class="mt-2 text-muted">Use this if test/example data was imported by mistake.</div>
         </div>
+
+        <div class="card">
+            <h2 class="card-title">Racing Data Provider</h2>
+            <div class="form-group">
+                <label class="form-label">Provider</label>
+                <select id="racing-provider" class="form-control">
+                    <option value="sample" ${(state.settings.racing_provider || 'sample') === 'sample' ? 'selected' : ''}>Sample data</option>
+                    <option value="racenet" ${state.settings.racing_provider === 'racenet' ? 'selected' : ''}>Racenet JSON feed</option>
+                    <option value="tab" ${state.settings.racing_provider === 'tab' ? 'selected' : ''}>TAB API</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Racenet JSON Feed Path</label>
+                <input type="text" id="racenet-feed-path" class="form-control" value="${escapeHtml(state.settings.racenet_feed_path || '')}" placeholder="/home/ozbizfin/racemate/data/racenet-feed.json">
+            </div>
+            <div class="runner-meta">
+                Provider imports use this saved setting by default. TAB API is ready as a provider option, but it will need the approved TAB credentials wired into the TAB provider before it can import live data.
+            </div>
+        </div>
         
         <div class="card">
             <h2 class="card-title">⚙️ Selection Settings</h2>
@@ -2977,6 +3000,8 @@ async function renderSettings() {
     // Save settings
     document.getElementById('save-settings-btn').addEventListener('click', async () => {
         const newSettings = {
+            racing_provider: document.getElementById('racing-provider').value,
+            racenet_feed_path: document.getElementById('racenet-feed-path').value.trim(),
             target_roi: document.getElementById('target-roi').value,
             min_confidence: document.getElementById('min-confidence').value,
             data_completeness_threshold: document.getElementById('data-threshold').value,

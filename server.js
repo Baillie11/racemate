@@ -520,9 +520,15 @@ app.get('/api/racing/races/:id/runners', (req, res) => {
 // POST /api/racing/import/today - Manually run configured provider import
 app.post('/api/racing/import/today', async (req, res) => {
     try {
+        const userId = getRequestUserId(req);
+        const savedProvider = db.settings.get('racing_provider', userId);
+        const savedRacenetFeedPath = db.settings.get('racenet_feed_path', userId);
+        const providerName = req.body?.provider || savedProvider || process.env.RACING_PROVIDER || 'sample';
         const result = await racingImportService.importToday({
-            providerName: req.body?.provider || process.env.RACING_PROVIDER || 'sample'
+            providerName,
+            racenetFeedPath: req.body?.racenetFeedPath || req.body?.racenet_feed_path || savedRacenetFeedPath || process.env.RACENET_FEED_PATH || ''
         });
+        db.settings.set('racing_provider', providerName, userId);
         res.json(result);
     } catch (err) {
         writeAuditLog('RACING_IMPORT_FAILED', 'Manual racing import failed', {
@@ -535,9 +541,15 @@ app.post('/api/racing/import/today', async (req, res) => {
 
 // POST /api/racing/import/results - Stub for later provider results import
 app.post('/api/racing/import/results', async (req, res) => {
+    const userId = getRequestUserId(req);
+    const savedProvider = db.settings.get('racing_provider', userId);
+    const savedRacenetFeedPath = db.settings.get('racenet_feed_path', userId);
+    const providerName = req.body?.provider || savedProvider || process.env.RACING_PROVIDER || 'sample';
     res.json(await racingImportService.importResults({
         ...(req.body || {}),
-        userId: getRequestUserId(req)
+        providerName,
+        racenetFeedPath: req.body?.racenetFeedPath || req.body?.racenet_feed_path || savedRacenetFeedPath || process.env.RACENET_FEED_PATH || '',
+        userId
     }));
 });
 
